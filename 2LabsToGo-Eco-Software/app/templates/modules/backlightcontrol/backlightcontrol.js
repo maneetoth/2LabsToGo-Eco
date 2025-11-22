@@ -3,6 +3,7 @@ document.addEventListener("DOMContentLoaded", function() {
   
     function sendToMachine(value) {
       var data = {'gcode': value};
+      console.log(data);
       $.ajax({
         method: 'POST',
         url: window.location.origin + '/send/',

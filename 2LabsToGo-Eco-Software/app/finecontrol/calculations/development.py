@@ -34,20 +34,15 @@ def speedWeighting(speeds: list):
 
 def calculateDevelopment(data, syringe_type_length, syringe_type_volume):
     data = SimpleNamespace(**data)
-    
     length = float(data.size_x) - float(data.offset_left) - float(data.offset_right)
-    
     start_point = [round(float(data.offset_left), 3),
                    round(float(data.offset_bottom), 3)]
-    
-    
+
     z_movement = volume_to_z_movement(data.volume, True, syringe_type_length, syringe_type_volume)
-    
-    
+
     speed_spline_list = cubicSpline(data.flowrate)
-    
     speed_factors = speedWeighting(speed_spline_list)
-    
+
     return GcodeGenDevelopment(start_point, length, z_movement, data.applications, data.printBothways,
                                float(data.motor_speed) * 60, data.temperature, data.pressure, data.waiting_times,
                                speed_factors)
@@ -76,6 +71,7 @@ def GcodeGenDevelopment(start_point, length, z_movement, applications, print_bot
     # Set relative coordinates
     generate.set_relative()
     jj = 0
+
     for x in range(int(applications) * 2):
         if jj >= len(waiting_times):  
             print(f"Out if index in waiting_times, index: {x}")
@@ -84,6 +80,7 @@ def GcodeGenDevelopment(start_point, length, z_movement, applications, print_bot
         # moving to the end of the line
         if (x % 2) == 0:
             generate.pressurize(pressure)
+            generate.wait_ms(200)
             generate.open_valve()
             for speed_factor in speed_factors:
                 generate.linear_move_xz(round(length / len(speed_factors), 3),
@@ -97,6 +94,7 @@ def GcodeGenDevelopment(start_point, length, z_movement, applications, print_bot
         else:
             if print_both_ways == 'True':
                 generate.pressurize(pressure)
+                generate.wait_ms(200)
                 generate.open_valve()
                 for speed_factor in speed_factors:
                     generate.linear_move_xz(-1 * round(length / len(speed_factors), 3),
@@ -108,7 +106,6 @@ def GcodeGenDevelopment(start_point, length, z_movement, applications, print_bot
                 jj += 1
             else:
                 generate.linear_move_x(-1 * length, speed)
-                jj += 1
         
         if jj >= int(applications):
             break
@@ -124,6 +121,4 @@ def GcodeGenDevelopment(start_point, length, z_movement, applications, print_bot
     generate.homming("XY")
     generate.check_return("M42P49S0")
     generate.check_return("M42P36S0")
-    generate.check_return("M92Z400")
-    generate.check_return("M203Z40")
     return generate.list_of_gcodes

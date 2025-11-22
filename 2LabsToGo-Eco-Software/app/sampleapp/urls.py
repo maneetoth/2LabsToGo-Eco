@@ -23,4 +23,11 @@ urlpatterns = [
 
     path('syringepump/start/', SampleAppPlaySP.as_view(), name='syringepumpplay'),
     
+    path('read-image/', read_and_process_image, name='read-image'),
+    path('Raw_densitogram/', Raw_densitogram, name='Raw_densitogram'),
+    path('Processed_densitogram/',Processed_densitogram, name='Processed_densitogram'),
+    path('calibrate/',calibrate, name='calibrate'),
+
+    path('csrf/', csrf, name='csrf'),
+    
 ]

@@ -14,7 +14,6 @@ var setData = function (data){
   })
   $(".change-graph-size-parameter").trigger("change")
   table.loadTable(data.bands_components)
-  
 }
 
 var list_of_saved = new listOfSaved("http://127.0.0.1:8000/syringepump/save/",
@@ -23,12 +22,17 @@ var list_of_saved = new listOfSaved("http://127.0.0.1:8000/syringepump/save/",
     getData,
     setData,
     "http://127.0.0.1:8000/syringepump/delete",
-    "syringe_pump"
     )
 
-var application_control = new ApplicationControlSP('http://127.0.0.1:8000/oclab/control/',
+var application_control = new ApplicationControl('http://127.0.0.1:8000/oclab/control/',
                                                 'http://127.0.0.1:8000/syringepump/start/',
                                                 getData)
+
+$(document).ready(function() {
+    createBandsTable()
+    calcVol()
+    list_of_saved.loadList()
+});
 
 $(".change-graph-size-parameter").on("change", function(){
     changeGraphSize()
@@ -37,8 +41,7 @@ $(".change-graph-size-parameter").on("change", function(){
 })
 
 $(".change-bands-table").on("change", function(){
-    //createBandsTable(getNumberBands())
-    newComponentsTable(getNumberBands());
+    createBandsTable()
     calcVol()
 })
 
@@ -66,33 +69,18 @@ $("#id_main_property").on("change",function(){
                 $("#valueLabel").text('Length')
                 break;
         }
-        //createBandsTable()
-        newComponentsTable(getNumberBands());
+        createBandsTable()
         $('.change-graph-size-parameter').trigger("change")
     });
 
-function getNumberBands() {
-  const gap_size = parseFloat($("#id_gap").val());
-  const band_size = parseFloat($("#id_value").val());
-  const property = $("#id_main_property").val();
-  const working_area = nBandsWorkingArea();
+function createBandsTable(){
+    gap_size = parseFloat($("#id_gap").val());
+    band_size = parseFloat($("#id_value").val());
+    property = $("#id_main_property").val();
+    number_bands = parseFloat($("#id_value").val());
 
-  if (property === '1') {
-      return parseFloat($("#id_value").val()); 
-  } else if (property === '2') {
-      return Math.trunc(working_area[0] / (band_size + gap_size));  
-  }
-  return 0;
-}
-
-function createBandsTable(number_bands = null){
-    // gap_size = parseFloat($("#id_gap").val());
-    // band_size = parseFloat($("#id_value").val());
-    // property = $("#id_main_property").val();
-    // number_bands = parseFloat($("#id_value").val());
-
-    // working_area = nBandsWorkingArea()
-    // if (property=='2'){number_bands = Math.trunc(working_area[0]/(band_size+gap_size))}
+    working_area = nBandsWorkingArea()
+    if (property=='2'){number_bands = Math.trunc(working_area[0]/(band_size+gap_size))}
     newComponentsTable(number_bands);
 }
 // MAIN
@@ -102,18 +90,18 @@ function mainCalculations(){
 
     let offset_left_size = parseFloat($("#id_offset_left").val());
     let offset_right_size = parseFloat($("#id_offset_right").val());
+    let offset_top_size = parseFloat($("#id_offset_top").val());
     let offset_bottom_size = parseFloat($("#id_offset_bottom").val());
 
     let gap_size = parseFloat($("#id_gap").val());
-    //let number_bands = parseFloat($("#id_value").val());
-    const number_bands = getNumberBands();
+    let number_bands = parseFloat($("#id_value").val());
     let band_size = parseFloat($("#id_value").val());
 
     let band_height = parseFloat($("#id_height").val());
     let property = $("#id_main_property").val();
 
   // Check if there are missing parameters
-  missing_parameter = (isNaN(plate_x_size)||isNaN(plate_y_size)||isNaN(offset_left_size)||isNaN(offset_right_size)||isNaN(offset_bottom_size)||isNaN(gap_size)||isNaN(band_height))
+  missing_parameter = (isNaN(plate_x_size)||isNaN(plate_y_size)||isNaN(offset_left_size)||isNaN(offset_right_size)||isNaN(offset_top_size)||isNaN(offset_bottom_size)||isNaN(gap_size)||isNaN(band_height))
 
   if(areErrors('#id_parameter_error',missing_parameter)){return}
 
@@ -139,10 +127,8 @@ function mainCalculations(){
       break;
     // Length
     case '2':
-      //number_bands = Math.trunc(working_area[0]/(band_size+gap_size))
+      number_bands = Math.trunc(working_area[0]/(band_size+gap_size))
       if(areErrors('#id_space_error',number_bands<1)){return}
-      //createBandsTable(number_bands);
-      newComponentsTable(number_bands);
       break;
   }
 
@@ -186,9 +172,10 @@ function nBandsWorkingArea(){
     let plate_y_size = parseFloat($("#id_size_y").val());
     let offset_left_size = parseFloat($("#id_offset_left").val());
     let offset_right_size = parseFloat($("#id_offset_right").val());
+    let offset_top_size = parseFloat($("#id_offset_top").val());
     let offset_bottom_size = parseFloat($("#id_offset_bottom").val());
 
-    working_area = [plate_x_size-offset_left_size-offset_right_size,plate_y_size-offset_bottom_size]
+    working_area = [plate_x_size-offset_left_size-offset_right_size,plate_y_size-offset_top_size-offset_bottom_size]
     if(working_area[0] <= 0 || working_area[1] <= 0 || isNaN(working_area[0]) || isNaN(working_area[1])){
         return [NaN,NaN];
     }
@@ -222,20 +209,9 @@ function totalBandsLength(working_area,sum_gaps_size,number_bands){
 
 
 // Create a new Table with a given number of rows
-// function newComponentsTable(number_row){
-//     table.destructor()
-//     table = new Table(number_row, calcVol);
-// }
-
-function newComponentsTable(desiredRows){
-    const diff = desiredRows - table.numberOfRows;
-
-    if (diff > 0){                  
-        table.addEmptyRows(diff);
-    } else if (diff < 0){           
-        table.removeRowsFromEnd(-diff);
-    }
-    
+function newComponentsTable(number_row){
+    table.destructor()
+    table = new Table(number_row, calcVol);
 }
 
 // Change the Graph sizes with the size x and y field values.
@@ -248,7 +224,6 @@ function changeGraphSize(){
 
 
 var calcVol = function calcVol(){
-
   $formData = $('#plateform').serialize()+'&'+$('#movementform').serialize()+'&table='+JSON.stringify(table.getTableValues())
   $endpoint = window.location.origin+'/syringepumpcalc/'
   $.ajax({
@@ -269,11 +244,8 @@ var calcVol = function calcVol(){
 }
 
 
-$(document).ready(function() {
-  //createBandsTable()
-  const defaultValue = parseFloat($("#id_value").val());
-  createBandsTable(defaultValue);
-  calcVol()
-  list_of_saved.loadList()
-});
+
+
+
+
 

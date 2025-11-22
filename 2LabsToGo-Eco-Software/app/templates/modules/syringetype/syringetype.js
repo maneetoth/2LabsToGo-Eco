@@ -40,6 +40,7 @@ $(document).ready(function() {
       'volume_type': selectedVolume,
       'length_type': lengthMappings[selectedVolume]
     };
+    console.log("submittedData ",submittedData)
 
   
     $.ajax({

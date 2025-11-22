@@ -1,5 +1,8 @@
+// Execute every time something happens wi
+// let flowRateChart = new flowRateGraph()
+
 var table_obj = new TableWaitingTime();
-let flowRateChart = new flowRateGraph()
+
 
 $(".development-flowrate-insidence").on("change", function (){
   flowrateCalc()
@@ -45,7 +48,7 @@ function importCsv(file) {
           if (isWaitingTimeSection) {
               let applicationIndex = key.match(/application_(\d+)/);
               if (applicationIndex) {
-                  waitingTimeData.push({ waitTime: value,application: applicationIndex[1] });
+                  waitingTimeData.push({ application: applicationIndex[1], waitingTime: value });
               }
           } else {
               formData[key] = decodeURIComponent(value);
@@ -54,20 +57,13 @@ function importCsv(file) {
 
       setDataF(formData);
       window.importedWaitingTimeData = waitingTimeData; 
-      
-      if (table_obj) {
-       
-       if (waitingTimeData) {
-           table_obj.loadFromImport(waitingTimeData);  
-       } else {
-           table_obj.generateEmptyRows();  
-       }
-   } else {
-       console.error("table_obj no está inicializado.");
-   }
-      
+
+      table_obj.eliminateRows(); 
+      waitingTimeData.forEach(wt => {
+          table_obj.appendRow(wt.application, wt.waitingTime);
+      });
   };
-  $('#import_csv_file').val('');
+
   reader.readAsText(file, 'UTF-8');
 }
 
@@ -126,8 +122,14 @@ function setDataF(data) {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
-  document.getElementById('import_csv_file').addEventListener('change', function(event) {
-  importCsv(event.target.files[0]);
+  document.getElementById('import_csv_button').addEventListener('click', function (e) {
+      e.preventDefault();
+      let file = document.getElementById('import_csv_file').files[0];
+      if (file) {
+          importCsv(file);
+      } else {
+          alert("Please select a CSV to import.");
+      }
   });
 });
 
@@ -138,6 +140,7 @@ function mainCalculations(){
 
   let offset_left_size = parseFloat($("#id_offset_left").val());
   let offset_right_size = parseFloat($("#id_offset_right").val());
+  let offset_top_size = parseFloat($("#id_offset_top").val());
   let offset_bottom_size = parseFloat($("#id_offset_bottom").val());
 
   let volume = parseFloat($("#id_develop_volume").val());
@@ -147,12 +150,12 @@ function mainCalculations(){
 
 
   // Check if theres missing parameters
-  missing_parameter = (isNaN(plate_x_size)||isNaN(plate_y_size)||isNaN(offset_left_size)||isNaN(offset_right_size)||isNaN(offset_bottom_size)||isNaN(volume))
+  missing_parameter = (isNaN(plate_x_size)||isNaN(plate_y_size)||isNaN(offset_left_size)||isNaN(offset_right_size)||isNaN(offset_top_size)||isNaN(offset_bottom_size)||isNaN(volume))
 
   if(areErrors('#id_parameter_error',missing_parameter)){return}
 
   // Calculate the Working Area [x,y]
-  working_area = nBandsWorkingArea(plate_x_size,offset_left_size,offset_right_size,plate_y_size,offset_bottom_size)
+  working_area = nBandsWorkingArea(plate_x_size,offset_left_size,offset_right_size,plate_y_size,offset_top_size,offset_bottom_size)
 
   // Check if its not posible to calculate the wa
   if(areErrors('#id_offsets_error',isNaN(working_area[0]) && isNaN(working_area[1]))){return}
@@ -173,8 +176,8 @@ function mainCalculations(){
 }
 
 //Calculates the Working Area
-function nBandsWorkingArea(plate_x_size,offset_left_size,offset_right_size,plate_y_size,offset_bottom_size){
-  working_area = [plate_x_size-offset_left_size-offset_right_size,plate_y_size-offset_bottom_size]
+function nBandsWorkingArea(plate_x_size,offset_left_size,offset_right_size,plate_y_size,offset_top_size,offset_bottom_size){
+  working_area = [plate_x_size-offset_left_size-offset_right_size,plate_y_size-offset_top_size-offset_bottom_size]
   if(working_area[0] <= 0 || working_area[1] <= 0 || isNaN(working_area[0]) || isNaN(working_area[1])){
     return [NaN,NaN];
   }
@@ -196,6 +199,7 @@ function areErrors(error_id, bolean_exp){
 }
 
 
+// Import/Export DATA
 $('#downloadfilebttn').on('click', function (e) {
   e.preventDefault()
   var element = document.createElement('a');
@@ -228,10 +232,12 @@ $('#removefilebttn').on('click', function (e) {
   $('#sizesfile').html('')
 })
 $('#file').on('change',function(e){
+                //get the file name
                 var fileName = e.target.files[0];
                 $(this).next('.custom-file-label').html(fileName.name);
             })
 
+// Return form data as Object
 function getFormData($form){
   var unindexed_array = $form.serializeArray();
   var indexed_array = {};
@@ -243,23 +249,28 @@ function getFormData($form){
   return indexed_array;
 }
 
+// Method that control the file load
 function getAsText(readFile) {
 
   var reader = new FileReader();
 
+  // Read file into memory as UTF-16
   reader.readAsText(readFile, "UTF-8");
 
+  // Handle progress, success, and errors
   reader.onload = loaded;
   reader.onerror = errorHandler;
 
   function loaded(evt) {
     var fileString = evt.target.result;
+    console.log(fileString);
     jsonObject = JSON.parse(fileString)
     loadMethodSuccess(jsonObject)
+    console.log(jsonObject)
   }
   function errorHandler(evt) {
     if(evt.target.error.name == "NotReadableError") {
-      
+      // The file could not be read
     }
   }
 }
@@ -274,66 +285,51 @@ function flowrateCalc(){
   $('#flowrate').text('estimated flowrate: ' + flowrate + " ul/s");
 }
 
-
 var getData = function(){
-  
-  let formData = $('form').serialize();  
-  let waitingTimes = JSON.stringify(table_obj.getValues()); 
-  let encodedWaitingTimes = encodeURIComponent(waitingTimes); 
-  let data = formData + "&waitingTimes=" + encodedWaitingTimes;
-  data = data+flowGraph.saveSegment(true)
-  return data;
-};
+    data = $('form').serialize()+flowGraph.saveSegment(true)
+    return data
+}
 
-
-
-var setData = function(data) {
-  $.each(data, function(key, value) {
-    let element = $('[name="' + key + '"]');
-    if (element.is('input')) {
-      if (element.attr('type') === 'checkbox') {
-        element.prop('checked', value === "True");
-      } else {
-        element.val(value);
+var setData = function (data){
+  $.each(data,function (key,value){
+    $('input[name='+key+']').val(value)
+    if(key=="printBothways"){
+      if(value=="True"){
+        $('input[name='+key+']').prop('checked', true);
       }
-    } else if (element.is('select')) {
-      element.val(value).change();
+      else{
+        $('input[name='+key+']').prop('checked', false);
+      }
     }
-  });
-
-
-   if (table_obj) {
-       if (data.waitingTimes) {
-           table_obj.loadFromImport(data.waitingTimes);  
-       } else {
-           table_obj.generateEmptyRows();  
-       }
-   } else {
-       console.error("table_obj no está inicializado.");
-   }
-  
-   flowGraph.loadSegment(data.flowrate);
-   $('.change-graph-size-parameter').trigger('change');
-  
-};
-
+    if (key=="fluid"){
+      $('select[name='+key+']').val(value);
+    }
+  })
+  flowGraph.loadSegment(data.flowrate)
+  $(".change-graph-size-parameter").trigger("change")
+}
 
 var list_of_saved = new listOfSaved("http://127.0.0.1:8000/development/save/",
     "http://127.0.0.1:8000/development/list",
     "http://127.0.0.1:8000/development/load",
     getData,
     setData,
-    "http://127.0.0.1:8000/development/delete",
-    "development"
+    "http://127.0.0.1:8000/development/delete"
     )
 
-var application_control = new ApplicationControlDev('http://127.0.0.1:8000/oclab/control/',
+var application_control = new ApplicationControl('http://127.0.0.1:8000/oclab/control/',
                                                 'http://127.0.0.1:8000/development/start/',
                                                 getData)
 
 $(document).ready(function() {
   flowrateCalc();
-  list_of_saved.loadList();
-  $("#flowrate_stepcontrol").trigger("change")
+  list_of_saved.loadList()
 });
+
+
+
+
+
+
+
 

@@ -12,22 +12,22 @@ services:
   app:
     restart: always
     container_name: oc_manager_cont
-    image: ocmanager/ocmanager4:arm64
+    build:
+      context: ./app
+      dockerfile: Dockerfile
     depends_on:
       - redis
-    #env_file: oc_manager_v3.env
     environment:
       - UDEV=1
       - DJANGO_SETTINGS_MODULE=app.settings
       - QT_X11_NO_MITSHM=1
-      #- QT_GRAPHICSSYSTEM="native"
       - DISPLAY=$DISPLAY
-    ports:
-      - "8000:8000" # Map 8000 to 8000 of our docker image
+    expose:
+      - "8000"
     privileged: true
     volumes:
-      - ./app:/app # Map ./app directory en docker app folder
-      - /dev:/dev # Magic for USB connection to work
+      - ./app:/app
+      - /dev:/dev
       - /run/udev:/run/udev:ro
       - /tmp/.X11-unix:/tmp/.X11-unix
     cap_add:
@@ -37,6 +37,31 @@ services:
     tmpfs:
       - '/dev/shm:exec'
     command: >
-      sh -c "python manage.py makemigrations &&
+      sh -c " python manage.py makemigrations &&
             python manage.py migrate &&
             python manage.py runserver 0.0.0.0:8000"
+
+  nextjs:
+    build: ./frontend
+    container_name: oc_nextjs_cont
+    expose:
+    - "3000"
+    # ports:
+    #   - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - app
+
+
+
+  nginx:
+    image: nginx:latest
+    container_name: oc_nginx_proxy
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+      - nextjs
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro

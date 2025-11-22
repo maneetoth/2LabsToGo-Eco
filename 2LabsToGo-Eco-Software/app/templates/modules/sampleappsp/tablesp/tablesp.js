@@ -1,4 +1,5 @@
-const OPTIONS = ["Acetone", "Acetonitrile", "2-Butanol", "Carbon Tetrachloride", "Chloroform", "Cyclohexane", "Dichloromethane", "Diethyl ether", "Ethanol", "Ethyl acetate", "n-Hexane", "Methanol", "Pentane", "2-Propanol", "Pyridine", "Toluene", "Water"]
+const OPTIONS = ["Water", "Methanol", "Acetone", "2-Butanol", "n-Hexane", "Pentane", "Cyclohexane", "Carbon Tetrachloride", "Toluene", "Chloroform", "Dichloromethane", "Diethyl ether", "Ethyl acetate", "Ethanol", "Pyridine"]
+
 let tot_time = 0
 let checkbox = 1
 
@@ -44,22 +45,6 @@ class Table {
         }
     }
 
-    addEmptyRows(n = 1){
-            for (let i = 0; i < n; i++){
-                const newRow = this.#addRow();
-                newRow.setBandNumber(this.numberOfRows);   
-            }
-        }
-
-        
-    removeRowsFromEnd(n = 1){
-        for (let i = 0; i < n; i++){
-            const last = this.row.pop();
-            if (last){ last.eliminate(); }
-            this.numberOfRows = this.row.length;
-        }
-    }
-
     getRowByNumber(numberOfRow) {
         /**
          * Returns the row object selected by number of row
@@ -92,33 +77,10 @@ class Table {
         }, this)
     }
 
-    // loadTable(data) {
-    //     if (data.length > this.numberOfRows) {
-    //         this.#addMultipleRows(data.length - this.numberOfRows);
-    //     } else if (data.length < this.numberOfRows) {
-    //         this.destructor();
-    //         this.#addMultipleRows(data.length);
-    //     }
-    //     data.forEach((rowData, index) => {
-    //         if (this.row[index]) {
-    //             this.row[index].loadDataInRow(rowData);
-    //         } else {
-    //             console.warn(`No row found for index ${index}`);
-    //         }
-    //     });
-        
-    // }
-
-    loadTable(data){
-    if (data.length > this.numberOfRows) {
-        this.addEmptyRows(data.length - this.numberOfRows);
-    } else if (data.length < this.numberOfRows) {
-        this.removeRowsFromEnd(this.numberOfRows - data.length);
-    }
-
-    data.forEach((rowData, idx) => {
-        if (this.row[idx]) { this.row[idx].loadDataInRow(rowData); }
-    });
+    loadTable(data) {
+        data.forEach(function (data, index, array) {
+            this.row[index].loadDataInRow(data)
+        }, this)
     }
 
     estim_time(data) {
@@ -305,7 +267,6 @@ class Table {
         }
 
         loadDataInRow(data) {
-            
             this.setBandNumber(data.band_number)
             this.setProduct(data.product_name)
             this.setVolumeValue(data.volume)
@@ -314,8 +275,6 @@ class Table {
             this.setViscosity(data.viscosity)
             this.setSample(data.sample)
             this.setOption(checkbox)
-            this.row.find('.volume').trigger('change');
-            this.row.find('.solvent_select').trigger('change');
         }
 
         eliminate() {
@@ -336,6 +295,7 @@ $(document).on('click', '.copybttn', function () {
     
     productName = $(this).parent().find(".product").val()
     
+    console.log(productName) 
 });
 
 $(document).on('click', '.pastebttn', function () {

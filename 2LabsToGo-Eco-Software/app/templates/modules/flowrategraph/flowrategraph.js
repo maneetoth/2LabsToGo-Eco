@@ -86,8 +86,11 @@ class flowRateGraph{
 }
 var flowGraph
 
+$(document).ready(function (){
+    $("#flowrate_stepcontrol").trigger("change")
+})
+
 $("#flowrate_stepcontrol").on("change", function (){
     let steps=parseInt($(this).val())
-    
     flowGraph = new flowRateGraph(steps)
 })

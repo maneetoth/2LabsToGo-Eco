@@ -25,10 +25,17 @@ SECRET_KEY = '&b5x3h*k6m5w#d&)&o@ecznzj0j()!mrn_7-3!3vjv%h&ch(86'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['127.0.0.1','192.168.2.109','134.176.158.47','testserver']
+ALLOWED_HOSTS = ['127.0.0.1','192.168.2.109','134.176.158.47','testserver',"localhost"]
+CSRF_TRUSTED_ORIGINS = [
+    'http://localhost',
+    'http://127.0.0.1',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
 
 
 # Application definition
+print("Loading before  INSTALLED_APPS...")
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -53,6 +60,7 @@ INSTALLED_APPS = [
     'rest_framework',
     # 'rest_framework.authtoken',
 ]
+print("Loading after INSTALLED_APPS...")
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

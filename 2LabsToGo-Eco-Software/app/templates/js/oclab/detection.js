@@ -3,8 +3,6 @@ var colorSelected = [{name: "red", value: "0"},
                     {name: "green", value: "0"},
                     {name: "blue", value: "0"}]
 
-let phantomImageID="";
-
 window.onload = function(){
     ExposureFormsControl($('#id_auto_exposure').val())
     AWBFormsControl($('#id_white_balance_auto_preset').val())
@@ -135,27 +133,27 @@ $('#shootbttn').on('click', function (e) {
 
   formData.push({ name: 'methodSelected[]', value: methodSelected[0].value });
   formData.push({ name: 'methodSelected[]', value: methodSelected[1].value });
-  formData.push({ name: 'image_id', value: globalThis.phantomImageID});
+  
   $.ajax({
     method: 'POST',
     url: captureEndpoint,
     data: $.param(formData),
     success: function(data) {
       shootMethodSuccess(data);
-      $('#loadingModal').hide();  
+      $('#loadingModal').hide();  // Pop-up-Fenster bei Erfolg schließen
       $('#modalOverlay').hide();
     },
     error: function(jqXHR, textStatus, errorThrown) {
       shootMethodError(jqXHR, textStatus, errorThrown);
-      $('#loadingModal').hide();
+      $('#loadingModal').hide();  // Pop-up-Fenster bei Fehler schließen
       $('#modalOverlay').hide();
     }
    });
 });
 
 function shootMethodSuccess(data, textStatus, jqXHR){
-    setData(data);
-    list_of_saved.loadList();
+  
+    list_of_saved.loadList()
 }
 function shootMethodError(jqXHR, textStatus, errorThrown){}
 
@@ -171,7 +169,7 @@ $('#hommingbttn').on('click', function (e) {
   gcode = 'M42P36S0';
   sendToMachine(gcode);
   sendToMachine('M355 S1 P255')
-  gcode = 'G28Z\nG28Y\nG28X';
+  gcode = 'G28X\nG28Y\nG28Z';
   sendToMachine(gcode);
   gcode = 'M355S1P50';  //case light on
   sendToMachine(gcode);
@@ -189,7 +187,7 @@ $('#cameraposbttn').on('click', function (e) {
     gcode = 'M42P36S0'
     sendToMachine(gcode)
     sendToMachine('M355 S0 P255')
-    gcode = 'G1X90\nG28YZ\nG1Y158Z270F3000' //Y value depends on each system
+    gcode = 'G28Y\nG1X90Y161.6Z270' //Y value depends on each system
     sendToMachine(gcode)
     gcode = 'M355S1P50';  //case light on
     sendToMachine(gcode);
@@ -197,96 +195,39 @@ $('#cameraposbttn').on('click', function (e) {
     sendToMachine(gcode);
   })
 
-
-
 var list_of_saved = new listOfSaved("http://127.0.0.1:8000/capture/save/",
 "http://127.0.0.1:8000/capture/list",
 "http://127.0.0.1:8000/capture/load",
 getData,
 setData,
-"http://127.0.0.1:8000/capture/deleteall",
-"detection"
+"http://127.0.0.1:8000/capture/deleteall"
 );
   
 function getData(){
-  let data = $('form').serialize();
-  data += '&red='   + encodeURIComponent(colorSelected[0].value);
-  data += '&green=' + encodeURIComponent(colorSelected[1].value);
-  data += '&blue='  + encodeURIComponent(colorSelected[2].value);
+    //check if this is working, because saving is done using take photo
+    imageID = $("#image_id").attr("alt")
+    data = $('form').serialize()+'&colorSelected'
+    +JSON.stringify(colorSelected)
+    +'&image_id='+imageID+'&note='+$('#notestextarea').val()
+return data
+};
 
-  data += '&note=' + encodeURIComponent($('#notestextarea').val());
+function setData(data){
+    if (typeof data.id_list === 'undefined') {
+        
+    } else {
+    pos = data.id_list.length - 1
 
-  return data;
-}
-function setData(data) {
+    $("#image_id").attr("src",data.url[pos]);
+    $("#image_id").attr("alt",data.id_list[pos]);
+    $("#image_id").attr("src-list",data.url);
+    $("#image_id").attr("alt-list",data.id_list);
+    $('#image_id').attr("position", pos)
 
-  if (data.image_id !== undefined && data.image_id !== null && data.image_id !== "") {
-    window.phantomImageID = data.image_id;
-  } 
-  else if (data.images && data.images.length > 0) {
-    const lastImage = data.images[data.images.length - 1];
-    window.phantomImageID = lastImage.image_id;
-  }
-
-  if (data.images && Array.isArray(data.images) && data.images.length > 0) {
-    let realImages = data.images.filter(img => img.url && !img.url.includes('default.jpg'));
-  
-    const lastImg = data.images[data.images.length - 1];
-    const isLastDefault = lastImg.url && lastImg.url.includes("default.jpg");
-  
-    if (isLastDefault) {
-      realImages.push(lastImg);
-    }
-  
-    if (realImages.length === 0) {
-      console.log("No real images found, skipping setData.");
-      return;
-    }
-  
-    const urlList = realImages.map(img => img.url);
-    const idList  = realImages.map(img => img.image_id);
-    const pos = realImages.length - 1;
-  
-    $("#image_id").attr("src", urlList[pos]);
-    $("#image_id").attr("alt", idList[pos]);
-    $("#image_id").attr("src-list", urlList.join(','));
-    $("#image_id").attr("alt-list", idList.join(','));
-    $("#image_id").attr("position", pos);
-  
-    const name = urlList[pos].split('/').pop().split('.').slice(0,-1).join('.').replace(/[_]+$/, "");
-    updateImagename(name);
-  
-    const lastImage = realImages[pos];
-    if (lastImage.note) {
-      $('#notestextarea').val(lastImage.note);
-    }
-  
-    setConf(lastImage.user_conf, lastImage.leds_conf, lastImage.camera_conf);
-    return;
-  }
- 
-  if (data.url && data.id_list && data.url.length === data.id_list.length) {
-    const pos = data.url.length - 1;
-    $("#image_id").attr("src", data.url[pos]);
-    $("#image_id").attr("alt", data.id_list[pos]);
-    $("#image_id").attr("src-list", data.url.join(','));
-    $("#image_id").attr("alt-list", data.id_list.join(','));
-    $("#image_id").attr("position", pos);
-   
-    setConf(data.user_conf, data.leds_conf, data.camera_conf);
-    if (data.note) {
-      $('#notestextarea').val(data.note);
-    }
-    return;
-  }
-
-  console.warn("setData: data structure is not correct");
-}
-
-
+    setConf(data.user_conf,data.leds_conf,data.camera_conf)}
+};
 
 function setConf(user_conf,leds_conf,camera_conf){
-    
     for (var [key, value] of Object.entries(user_conf)) {
         $("#id_"+key).val(String(value));
     };
@@ -321,7 +262,6 @@ function switchPicture(direction){
     $("#image_id").attr("src",src_list[position]);
     $("#image_id").attr("alt",alt_list[position]);
     $("#image_id").attr("position",position);
-    
   }
 
   $('#right').on('click', function (e) {
@@ -350,18 +290,9 @@ function switchPicture(direction){
       
       setConf(data.user_conf,data.leds_conf,data.camera_conf)
       $('#notestextarea').val(data.note)
-      const src = $("#image_id").attr("src");
-      const name = src.split('/').pop().split('.').slice(0,-1).join('.').replace(/[_]+$/, "");
-      updateImagename(name);
   }
   function getConfigMethodError(jqXHR, textStatus, errorThrown){console.log('error')}
 
 $(document).ready(function() {
-    list_of_saved.loadList();
- 
+    list_of_saved.loadList()
 });
-function updateImagename(imageURL){
-  $('#image-name-container').text(imageURL)
-
-}
-

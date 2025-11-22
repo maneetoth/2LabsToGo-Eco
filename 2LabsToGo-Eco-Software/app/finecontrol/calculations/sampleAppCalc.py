@@ -132,6 +132,7 @@ def calculate_number_of_times_to_apply(volume_per_band, vol, vol2):
             real_volume -= vol2
     return times_to_apply, real_volume
 
+
 def calculate_number_of_points(length, distance_between_points):
     number_of_points = int(length / distance_between_points) + 1
     return number_of_points
@@ -139,7 +140,7 @@ def calculate_number_of_points(length, distance_between_points):
 
 def calculate_working_area(data):
     x_working_area = data.size_x - data.offset_left - data.offset_right
-    y_working_area = data.size_y - data.offset_bottom
+    y_working_area = data.size_y - data.offset_top - data.offset_bottom
     return [x_working_area, y_working_area]
 
 
@@ -179,18 +180,12 @@ def list_of_sample(data):
             list_sample[j] = j+1
     return list_sample
 
-def list_of_fluid(data):
-    return [fila["type"] for fila in data.table]
-
 
 def calculate(data):
     data = SimpleNamespace(**data)
     working_area = calculate_working_area(data)
 
     list_sample = list_of_sample(data)
-    
-    list_fluid = list_of_fluid(data)
-    
     if int(data.main_property) == 1:
         n_bands, length = pre_calculations_when_nbands_option_selected(
             data, working_area[0])
@@ -201,8 +196,6 @@ def calculate(data):
     application_volume_info = calculate_volume_application_infoAS(data)
 
     band_application_times = []
-
-
 
     for aux in application_volume_info:
         if 'times' in aux:
@@ -261,9 +254,7 @@ def calculate(data):
                                     data.waitTime,
                                     data.rinsingPeriod,
                                     list_sample,
-                                    data.nozzlediameter,
-                                    data.rinsingSolvent,
-                                    list_fluid)
+                                    data.nozzlediameter)
 
     return print_process.printing_process()
 
@@ -373,6 +364,10 @@ class PrintingProcessSP:
         
 
     def _bands_printing(self):
+        """
+        will rinse after 50 drops applied
+        will wait for waitTime before going in -y direction
+        """
         number_of_drops_applied = 0
         direction_y = 0
         for band in self.list_of_bands:
@@ -398,13 +393,12 @@ class PrintingProcessSP:
         self._gcode_generator.report_bed_temperature(0)
         self._gcode_generator.homming("Y") #first Y
         self._gcode_generator.homming("X") #then X
-        
 
 
 class PrintingProcess:
 
     def __init__(self, list_of_bands, speed, frequency, temperature, pressure, zero_position, wait_time,
-                 rinsing_period, list_sample, nozzlediameter, rinsingSolvent, list_fluid) -> object:
+                 rinsing_period, list_sample, nozzlediameter) -> object:
         self.list_of_bands = list_of_bands
         self.rinsingPeriod = rinsing_period
         self.speed = speed
@@ -415,17 +409,14 @@ class PrintingProcess:
         self.waitTime = wait_time
         self.list_sample = list_sample
         self.nozzlediameter = nozzlediameter
-        self.list_fluid = list_fluid
-        self.rinsingSolvent = rinsingSolvent
 
     def printing_process(self):
 
-        self._gcode_generator.check_return("M75")   #start print job timer
         self._set_temperature()
         self._up()
         self._finish_move()
         self._load_vials()
-        #self._homming()
+        self._homming()
         self._finish_move()
         self._rinsing()
         self._application()
@@ -451,9 +442,11 @@ class PrintingProcess:
         self._gcode_generator.hold_bed_temperature(0)
         self._gcode_generator.report_bed_temperature(0)
         self._load_vials()
-        self._homming()
-        self._gcode_generator.prinTime()
+        self._start_pump()
         self._finish_move()
+        self._stop_pump()
+        self._finish_move()
+        self._homming()
 
     def _up(self):
         self._gcode_generator.up()
@@ -465,10 +458,10 @@ class PrintingProcess:
         self._gcode_generator.load_vials()
 
     def _homming(self):
-        self._gcode_generator.homming("YX")
+        self._gcode_generator.homming("YZ")
 
     def _rinsing(self):
-        self._gcode_generator.rinsing(self.nozzlediameter, self.rinsingSolvent)
+        self._gcode_generator.rinsing(self.nozzlediameter)
 
     def _start_pump(self):
         self._gcode_generator.start_pump()
@@ -481,4 +474,4 @@ class PrintingProcess:
 
     def _application(self):
         self._gcode_generator.application(
-            self.frequency, self.list_of_bands, self.waitTime, self.speed, self.list_sample, self.rinsingPeriod, self.nozzlediameter, self.rinsingSolvent, self.list_fluid)
+            self.frequency, self.list_of_bands, self.waitTime, self.speed, self.list_sample, self.rinsingPeriod, self.nozzlediameter)

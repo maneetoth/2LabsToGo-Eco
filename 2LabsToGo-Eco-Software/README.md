@@ -2,10 +2,9 @@
 ## Install
 The installation process is really simple. 
 
-2LabsToGo-Eco-Software works fine on a 'Raspberry Pi 4' with 4Gb RAM memory.
+2LabsToGo-Eco-Software works fine on a 'Raspberry Pi 4' with 4Gb RAM memory and installed on it through [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
 
-As operation system, Raspberry Pi OS (Legacy, 64-bit, Debian Bullseye) is recommended,
-installed by the [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+As operation system, Raspberry Pi OS (Legacy, 64-bit, Debian Bullseye) is recommended. 
 
 To clone the 2LabsToGo-Eco repository, consult this [README](https://github.com/OfficeChromatography/2LabsToGo-Eco/blob/main/README.md).
 
@@ -17,7 +16,7 @@ cd /path/to/your/2LabsToGo-Eco-Software
 ```
 Then execute
 ```bash
-python3 install.py |& tee install-py.log
+python3 install.py
 ```
 
 This will install:
@@ -29,19 +28,16 @@ After some minutes, 2LabsToGo-Eco-Software is installed in your device.
 
 To start the server execute the run.py file with
 ```
-python3 run.py |& tee run-py.log
+python3 run.py 
 ```
-The log files can be consulted in case of any problem.<a>
-
-To quit the Django server, press
+To quit the Django server press
 ```
-Ctrl+c 
+ctrl+c 
 ```
 
 2LabsToGo-Eco-Software was intensively tested with both Chromium and Firefox as browser.
 
-To use the software consult the 2LabsToGo-Eco-Software Manual (see reference in 
-this [README](https://github.com/OfficeChromatography/2LabsToGo-Eco/blob/main/README.md)).
+To use the software consult the [2LabsToGo-Eco-Software Manual](https://github.com/OfficeChromatography/2LabsToGo-Eco/blob/main/2LabsToGo-Eco-Instructions/2LabsToGo-Eco-Software%20Manual.pdf).
 
 # Useful guides
 

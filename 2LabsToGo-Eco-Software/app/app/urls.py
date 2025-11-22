@@ -18,7 +18,9 @@ from django.urls import path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.conf.urls import include
-
+from django.views.generic import TemplateView
+from django.urls import re_path
+from django.http import HttpResponse
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -28,7 +30,11 @@ urlpatterns = [
     path('', include('sampleapp.urls')),
     path('', include('development.urls')),
     path('', include('detection.urls')),
+    path("healthz/", lambda r: HttpResponse("ok saasfjhsvhd", content_type="text/plain")),
+    path("api/healthz/", lambda r: HttpResponse("ok django working", content_type="text/plain")),
+
 ]
+
 
 if settings.DEBUG:
     urlpatterns += static(

@@ -41,6 +41,7 @@ $('#pausebttn').on('click', function (e) {
 
 
 function cleanMethodSuccess(data, textStatus, jqXHR){
+  console.log(data);
   $('.control-bttn').removeClass('btn-danger btn-secondary')
   $('.control-bttn').addClass('btn btn-success')
   cleaningstatusalert(true, data.message)
@@ -50,11 +51,13 @@ function cleanMethodError(jqXHR, textStatus, errorThrown){
   console.log(errorThrown)
 }
 function stopMethodSuccess(data, textStatus, jqXHR){
+  console.log(data);
   $('.control-bttn').removeClass('btn-success btn-secondary')
   $('.control-bttn').addClass('btn btn-danger')
 }
 function stopMethodError(jqXHR, textStatus, errorThrown){}
 function pauseMethodSuccess(data, textStatus, jqXHR){
+  console.log(data);
     $('.control-bttn').removeClass('btn-success btn-danger')
   $('.control-bttn').addClass('btn btn-secondary')
 }
@@ -75,6 +78,7 @@ function checkCleaningStatus(){
   })
 
   function checkCleaningSuccess(data, textStatus, jqXHR){
+    console.log(data);
     if(data.busy=='true'){
       cleaningstatusalert(true, data.message)
       progressbar(data.busy)

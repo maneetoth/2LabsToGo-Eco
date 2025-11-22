@@ -1,40 +1,39 @@
 window.table = new Table(0, calcVol);
 var selectedFile;
-
-
 var getData = function(){
-    data = $("form:not(.band-component):visible").serialize()+'&table='+JSON.stringify(table.getTableValues());
+    data = $("form:not(.band-component)").serialize()+'&table='+JSON.stringify(table.getTableValues());
     return data
 }
 
 var setData = function (data){
   $.each(data,function (key,value){
-    let element = $('[name="'+key+'"]');
-    if(element.is('input')){
-      element.val(value);
+    $('input[name='+key+']').val(value)
+    if(key == "main_property"){
+        $('select[name='+key+']').val(value)
     }
-    else if(element.is('select')){
-      element.val(value).change();
-    }
-
-
-  });
-  $('.change-graph-size-parameter').trigger('change')
+  })
+  $(".change-graph-size-parameter").trigger("change")
   table.loadTable(data.bands_components)
+  updateFormDisplay();
 }
 
 var list_of_saved = new listOfSaved("http://127.0.0.1:8000/sample/save/",
-  "http://127.0.0.1:8000/sample/list",
-  "http://127.0.0.1:8000/sample/load",
-  getData,
-  setData,
-  "http://127.0.0.1:8000/sample/delete",
-  "autosampler"
-)
+    "http://127.0.0.1:8000/sample/list",
+    "http://127.0.0.1:8000/sample/load",
+    getData,
+    setData,
+    "http://127.0.0.1:8000/sample/delete",
+    )
 
-var application_control = new ApplicationControlAS('http://127.0.0.1:8000/oclab/control/',
-                                              'http://127.0.0.1:8000/sample/start/',
-                                              getData)
+var application_control = new ApplicationControl('http://127.0.0.1:8000/oclab/control/',
+                                                'http://127.0.0.1:8000/sample/start/',
+                                                getData)
+
+$(document).ready(function() {
+    createBandsTable()
+    calcVol()
+    list_of_saved.loadList()
+});
 
 $(".change-graph-size-parameter").on("change", function(){
     changeGraphSize()
@@ -43,9 +42,7 @@ $(".change-graph-size-parameter").on("change", function(){
 })
 
 $(".change-bands-table").on("change", function(){
-    //createBandsTable()
-   // createBandsTable(getNumberBands());
-    newComponentsTable(getNumberBands());
+    createBandsTable()
     calcVol()
 })
 
@@ -79,41 +76,20 @@ function handlePropertyChange() {
           });
           break;
   }
-  //createBandsTable();
-  //createBandsTable(getNumberBands());
-  newComponentsTable(getNumberBands());
+  createBandsTable();
   $('.change-graph-size-parameter').trigger("change");
 }
 
-function getNumberBands() {
-  const gap_size = parseFloat($("#id_gap").val());
-  const band_size = parseFloat($("#id_value").val());
-  const property = $("#id_main_property").val();
-  const working_area = nBandsWorkingArea();
+function createBandsTable(){
+    gap_size = parseFloat($("#id_gap").val());
+    band_size = parseFloat($("#id_value").val());
+    property = $("#id_main_property").val();
+    number_bands = parseFloat($("#id_value").val());
 
-  if (property === '1') {
-      return parseFloat($("#id_value").val());  
-  } else if (property === '2') {
-      return Math.trunc(working_area[0] / (band_size + gap_size)); 
-  }
-  return 0;
+    working_area = nBandsWorkingArea()
+    if (property=='2'){number_bands = Math.trunc(working_area[0]/(band_size+gap_size))}
+    newComponentsTable(number_bands);
 }
-
-function createBandsTable(number_bands = null){
-
-newComponentsTable(number_bands);
-}
-
-// function createBandsTable(){
-//     gap_size = parseFloat($("#id_gap").val());
-//     band_size = parseFloat($("#id_value").val());
-//     property = $("#id_main_property").val();
-//     number_bands = parseFloat($("#id_value").val());
-
-//     working_area = nBandsWorkingArea()
-//     if (property=='2'){number_bands = Math.trunc(working_area[0]/(band_size+gap_size))}
-//     newComponentsTable(number_bands);
-// }
 // MAIN
 function mainCalculations(){
     let plate_x_size = parseFloat($("#id_size_x").val());
@@ -121,18 +97,18 @@ function mainCalculations(){
 
     let offset_left_size = parseFloat($("#id_offset_left").val());
     let offset_right_size = parseFloat($("#id_offset_right").val());
+    let offset_top_size = parseFloat($("#id_offset_top").val());
     let offset_bottom_size = parseFloat($("#id_offset_bottom").val());
 
     let gap_size = parseFloat($("#id_gap").val());
-    //let number_bands = parseFloat($("#id_value").val());
-    const number_bands = getNumberBands();
+    let number_bands = parseFloat($("#id_value").val());
     let band_size = parseFloat($("#id_value").val());
 
     let band_height = parseFloat($("#id_height").val());
     let property = $("#id_main_property").val();
 
   // Check if there are missing parameters
-  missing_parameter = (isNaN(plate_x_size)||isNaN(plate_y_size)||isNaN(offset_left_size)||isNaN(offset_right_size)||isNaN(offset_bottom_size)||isNaN(gap_size)||isNaN(band_height))
+  missing_parameter = (isNaN(plate_x_size)||isNaN(plate_y_size)||isNaN(offset_left_size)||isNaN(offset_right_size)||isNaN(offset_top_size)||isNaN(offset_bottom_size)||isNaN(gap_size)||isNaN(band_height))
 
   if(areErrors('#id_parameter_error',missing_parameter)){return}
 
@@ -158,10 +134,8 @@ function mainCalculations(){
       break;
     // Length
     case '2':
-      //number_bands = Math.trunc(working_area[0]/(band_size+gap_size))
+      number_bands = Math.trunc(working_area[0]/(band_size+gap_size))
       if(areErrors('#id_space_error',number_bands<1)){return}
-      //createBandsTable(number_bands);
-      newComponentsTable(number_bands);
       break;
   }
 
@@ -205,9 +179,10 @@ function nBandsWorkingArea(){
     let plate_y_size = parseFloat($("#id_size_y").val());
     let offset_left_size = parseFloat($("#id_offset_left").val());
     let offset_right_size = parseFloat($("#id_offset_right").val());
+    let offset_top_size = parseFloat($("#id_offset_top").val());
     let offset_bottom_size = parseFloat($("#id_offset_bottom").val());
 
-    working_area = [plate_x_size-offset_left_size-offset_right_size,plate_y_size-offset_bottom_size]
+    working_area = [plate_x_size-offset_left_size-offset_right_size,plate_y_size-offset_top_size-offset_bottom_size]
     if(working_area[0] <= 0 || working_area[1] <= 0 || isNaN(working_area[0]) || isNaN(working_area[1])){
         return [NaN,NaN];
     }
@@ -216,7 +191,7 @@ function nBandsWorkingArea(){
     }
 }
 
-//  Calculate the sum of gaps length
+//  Calculate the sum of gaps lenght
 function totalGapLength(number_bands, gap_size){
   number_of_gaps = number_bands - 1;
   if(number_of_gaps<0){
@@ -238,20 +213,12 @@ function totalBandsLength(working_area,sum_gaps_size,number_bands){
   }
 }
 
-// Create a new Table with a given number of rows
-// function newComponentsTable(number_row){
-//     table.destructor()
-//     table = new Table(number_row, calcVol);
-// }
-function newComponentsTable(desiredRows){
-    const diff = desiredRows - table.numberOfRows;
 
-    if (diff > 0){                  
-        table.addEmptyRows(diff);
-    } else if (diff < 0){           
-        table.removeRowsFromEnd(-diff);
-    }
-    
+
+// Create a new Table with a given number of rows
+function newComponentsTable(number_row){
+    table.destructor()
+    table = new Table(number_row, calcVol);
 }
 
 // Change the Graph sizes with the size x and y field values.
@@ -266,7 +233,8 @@ function changeGraphSize(){
 var calcVol = function calcVol(){
   $formData = $('#plateform').serialize()+'&'+$('#movementform').serialize()+'&table='+JSON.stringify(table.getTableValues())
   $endpoint = window.location.origin+'/samplecalc/'
-  
+  console.log($endpoint)
+  console.log($formData)
   $.ajax({
   method: 'POST',
   url:    $endpoint,
@@ -280,28 +248,25 @@ var calcVol = function calcVol(){
     table.estim_time(data.results.slice(-1))
   }
   function calcMethodError(jqXHR, textStatus, errorThrown){
+      console.error("Error calculating estimated volumes", errorThrown)
     }
 }
 
 document.addEventListener('DOMContentLoaded', function() {
   
-  // document.getElementById('import_csv_button').addEventListener('click', function() {
-  //   if (selectedFile) {
-  //     var reader = new FileReader();
-  //     reader.onload = function(e) {
-  //       processCSV(e.target.result);
-  //     };
-  //     reader.readAsText(selectedFile);
-  //   }
-  // });
-
-  document.getElementById('import_csv_file').addEventListener('change', function(event) {
-   
-    var reader = new FileReader();
+  document.getElementById('import-csv-btn').addEventListener('click', function() {
+    if (selectedFile) {
+      var reader = new FileReader();
       reader.onload = function(e) {
         processCSV(e.target.result);
       };
-      reader.readAsText(event.target.files[0]);
+      reader.readAsText(selectedFile);
+    }
+  });
+
+  document.getElementById('import-csv').addEventListener('change', function(event) {
+    selectedFile = event.target.files[0];
+    document.getElementById('file-name-display').textContent = selectedFile.name;
   });
 });
 
@@ -332,10 +297,6 @@ function processCSV(csvData) {
   });
 
   loadDataIntoForm(result);
-  //$('#import-csv').val('');
-  $('#import_csv_file').val('');
-  
-  
 }
 
 function loadDataIntoForm(data) {
@@ -343,7 +304,7 @@ function loadDataIntoForm(data) {
     if (key === "table") {
       loadTableData(data[key]);
     } else {
-      var input = document.querySelector(`[name="${key}"]`);
+      var input = document.querySelector('[name="${key}"]');
       if (input) {
         input.value = data[key];
         input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -364,11 +325,11 @@ function loadTableData(tableData) {
   }
 }
 
-$(document).ready(function() {
-  //createBandsTable()
-  const defaultValue = parseFloat($("#id_value").val());
-  createBandsTable(defaultValue);
-  calcVol()
-  list_of_saved.loadList()
-});
+
+
+
+
+
+
+
 

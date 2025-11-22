@@ -11,7 +11,6 @@ class Flow:
             used in development as time [s]
         """
         density_table = {
-            "Acetonitrile": {"density": 0.78, "fluid_correction_factor": 1.0},
             "Water": {"density": 1, "fluid_correction_factor": 1.0},
             "Methanol": {"density": 0.792, "fluid_correction_factor": 1.0},
             "Acetone": {"density": 0.784, "fluid_correction_factor": 1.0},
@@ -107,7 +106,6 @@ class FlowAS:
             used in development as time [s]
         """
         density_table = {
-            "Acetonitrile": {"density": 0.78, "fluid_correction_factor": 1.0},
             "Water": {"density": 1, "fluid_correction_factor": 1.0},
             "Methanol": {"density": 0.792, "fluid_correction_factor": 1.357479316},
             "Acetone": {"density": 0.784, "fluid_correction_factor": 1.208793618},
@@ -115,13 +113,10 @@ class FlowAS:
             'Diethyl ether': {"density": 0.713, "fluid_correction_factor": 1},
             'Ethyl acetate': {"density": 0.902, "fluid_correction_factor": 1.137102707},
             'Ethanol': {"density": 0.789, "fluid_correction_factor": 1.238124086},
-            "2-Propanol": {"density": 0.786, "fluid_correction_factor": 1.11026373},
-            "Cyclohexane": {"density": 0.779, "fluid_correction_factor": 1.0},
-            "Toluene": {"density": 0.867, "fluid_correction_factor": 1.0},
+            "iso-Propanol": {"density": 0.786, "fluid_correction_factor": 1.11026373},
         }
         if fluid != 'Specific':
             fluid_properties = density_table[fluid]
-           
             self.density = fluid_properties["density"]
             self.fluid_correction_factor = fluid_properties["fluid_correction_factor"]
         else:
