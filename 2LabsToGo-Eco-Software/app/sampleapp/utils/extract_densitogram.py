@@ -597,12 +597,6 @@ def simple_inversion(data):
         inverted = inverted - min_val  # shift so minimum is zero
     return inverted
 ###########################################################################################################################
-
-import numpy as np
-import json
-import base64
-import io
-from PIL import Image
 import numpy as np
 import json
 import base64
@@ -744,8 +738,8 @@ def plot_before_preprocessing(
             "band_image": band_image
         }
 
+
     return raw_data
-    
 
 import numpy as np
 from copy import deepcopy
@@ -819,9 +813,11 @@ def apply_preprocessing(
         else:
             print(f"Warning: 'gammaCorrection' option not found in preprocess_option.")
     if 'baseline' in preprocess_order:
-        data = baseline_correction(data, method=preprocess_option['baseline'])
-        if data.ndim == 2:
-            data = data[:, :, np.newaxis]
+        if 'baseline' in preprocess_option:
+            data = baseline_correction(data, method=preprocess_option['baseline'])
+            data = np.stack(data, axis=0)
+            if data.ndim == 2:
+                data = data[:, :, np.newaxis]
         else:
             # Use ASLS as the default baseline correction method
             default_method = {'type': 'asls', 'lam': 5, 'p': 0.01, 'max_iter': 50}
@@ -862,83 +858,3 @@ def apply_preprocessing(
     # Ensure all values are positive
     data = np.maximum(data, 0)
     return data
-
-'''# --- IRLS (robust Whittaker) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'irls',
-                  'lambda1': 1e5, 'lambda2': 5e5,
-                  'wi': 0.05, 'max_iter': 100,
-                   }}
-)
-# --- ASLS (Whittaker with asym. weights) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'asls',
-                  'lam': 1e5, 'p': 0.01, 'max_iter': 50}}
-)
-# --- MODPOLY (iterative modified polynomial) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'modpolyfit',
-                  'degree': 4, 'tol': 1e-3, 'max_iter': 100}}
-)
-# --- FILLPEAKS (peak filling + Whittaker smooth) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'fillpeaks',
-                  'lambda': 6.0, 'hwi': 50, 'it': 10, 'int': 2000
-                 }}
-)
-# --- MEDIAN WINDOW (running median, optional gaussian smooth) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'medianWindow',
-                  'k_size': 300, 'hws': 5, 'end': False}}
-)
-# --- ROLLING BALL (morphological) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'rollingball',
-                  'half_window': 200, 'smooth_half_window': 200}}
-)
-# --- LOWPASS (FFT logistic low-pass) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'lowpass',
-                  'steep': 2.0, 'half': 5.0}}
-)
-# --- PEAK DETECTION (median envelope via peak suppression) ---
-data = densitogram_after_preprocessing(
-    data, ['NegativePeakInversion','baseline'],
-    {'baseline': {'type':'peakDetection',
-                  'left': 10, 'right': 300, 'lwin': 50, 'rwin': 50,
-                  'height': None, 'distance': None, 'prominence': None,
-                  'snminimum': 3}}
-)
-'''# low_pass, median_widow and peak_detection
-# baseline correction (not done)
-# data= densitogram_after_preprocessing(data, ['baseline'],   {'baseline':{'type':'asls','lam':5,'p':0.05,'max_iter':20}})
-# data= densitogram_after_preprocessing(data, ['baseline'],   {"baseline":{"type":"irls","lam":5,"max_iter":100, "lambda2":9, "wi":0.05 }})   ## need to check why i can not have lambda 2 and weights parameter
-# data= densitogram_after_preprocessing(data, ['baseline'],   {'baseline':{'type':'modpolyfit','degree':3,'max_iter':50, 'tol':0.001}})
-# fillpeaks not done
-# data = densitogram_after_preprocessing(data,['baseline'],{'baseline': {'type': 'peak_detection', 'height': 0.5, 'distance': 5}})
-
-# data= densitogram_after_preprocessing(data, ['baseline'],   {'baseline':{'type':'medianWindow','k_size':300}})    # we dont have hws need to take a look into that
-# data= densitogram_after_preprocessing(data, ['baseline'],   {'baseline':{'type':'rollingball','half_window':200,'smooth_half_window':200} }})
-# data= densitogram_after_preprocessing(data, ['baseline'],   {'baseline':{"type":"lowpass","cutoff":0.1,"order":5}})
-
-# Warping (not done)
-# need to varify  this again and check it properly if alll the values are correct and are we getting the correct densitogram
-# data= densitogram_after_preprocessing(data, ['Warping'],   {'Warping':{'dtw':14 }})    # need to confirm wich band number is which 
-# data= densitogram_after_preprocessing(data, ['Warping'],   {'Warping':{'ptw':13,'degree':2,'seg_len':100 }})
-
-# why do we need gamma correction?
-# gammaCorrection: (done)
-# data= densitogram_after_preprocessing(data, ['gammaCorrection'],  {'gammaCorrection':1})
-
-# NegativePeakInversion (done)
-# data= densitogram_after_preprocessing(data, ['NegativePeakInversion'],  {'Smoothing':{'window.size':15,'poly.order':2, 'diff.order': 0 }})
-
-# smoothing (done)
-# savgol_filter(row, window_length=input_opts['window.size'], polyorder=input_opts['poly.order'], deriv=input_opts['diff.order']

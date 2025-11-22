@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeftIcon, ArrowRightIcon } from "@heroicons/react/24/outline"; // Import Heroicons
 import axios from 'axios';
@@ -17,7 +17,17 @@ const Dashboard: React.FC = () => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const router = useRouter()
     const dispatch = useDispatch<AppDispatch>()
-    const [formData, setFormData] = useState({
+    interface FormDataShape {
+        real_width_mm: number;
+        real_height_mm: number;
+        crop_bottom_mm: number;
+        crop_top_mm: number;
+        first_band_mm: number;
+        band_spacing_mm: number;
+        num_bands: number;
+        estimated_band_width_mm: number;
+    }
+    const [formData, setFormData] = useState<FormDataShape>({
         real_width_mm: 200.0,
         real_height_mm: 100.0,
         crop_bottom_mm: 8.0,
@@ -25,45 +35,45 @@ const Dashboard: React.FC = () => {
         first_band_mm: 16.0,
         band_spacing_mm: 10.5,
         num_bands: 17.0,
-        estimated_band_width_mm: 'none'
-        // real_width_mm:"",
-        // real_height_mm: "",
-        // crop_bottom_mm: "",
-        // crop_top_mm: "",
-        // first_band_mm: "",
-        // band_spacing_mm: "",
-        // num_bands: "",
-        // estimated_band_width_mm: 'none'
+        // dynamically computed; always kept as positive float
+        estimated_band_width_mm: 0.0,
     });
+    // Track if user manually overrides the auto band width
+    const [manualBandWidthOverride, setManualBandWidthOverride] = useState(false);
     const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
     const [selectedPreprocessing, setSelectedPreprocessing] = useState<PreprocessValue[]>([]);
     const [preprocessedData, setPreprocessedData] = useState<PreprocessedOutput | null>(null);
     const [bandStep, setBandStep] = useState(1);
 
-    const validateForm = () => {
-        const errors: { [key: string]: string } = {};
-      
-        if (images.length === 0) {
-          errors.image = "Please select at least one image.";
-        }
-      
-        Object.entries(formData).forEach(([key, value]) => {
-          if (value === '' || value === null) {
-            errors[key] = "This field is required.";
-          } else if (key !== 'estimated_band_width_mm' && typeof value === 'number' && value < 0) {
-            errors[key] = "Value must be non-negative.";
-        } else if (
-            key === 'estimated_band_width_mm' &&
-            value !== 'none' &&
-            isNaN(parseFloat(String(value)))
-          ) {
-            errors[key] = "Must be a number or 'none'.";
-          }
-        });
-      
-        setFormErrors(errors);
-        return Object.keys(errors).length === 0;
-      };
+        const validateForm = () => {
+                const errors: { [key: string]: string } = {};
+
+                if (images.length === 0) {
+                        errors.image = "Please select at least one image.";
+                }
+
+                Object.entries(formData).forEach(([key, raw]) => {
+                        const value = raw as number;
+                        if (!Number.isFinite(value)) {
+                                errors[key] = "Value must be a finite number.";
+                                return;
+                        }
+                        if (value < 0) {
+                                errors[key] = "Value must be non-negative.";
+                                return;
+                        }
+                        if (key === 'num_bands' && (value < 1 || !Number.isInteger(value))) {
+                                errors[key] = "Number of bands must be a positive integer.";
+                        }
+                });
+
+                if (!manualBandWidthOverride && formData.estimated_band_width_mm === 0) {
+                        errors.estimated_band_width_mm = "Estimated width computed as 0; adjust inputs or override.";
+                }
+
+                setFormErrors(errors);
+                return Object.keys(errors).length === 0;
+        };
       
 
 
@@ -157,22 +167,30 @@ useEffect(() => {
     // Update: handle input change for each field, with special handling for estimated_band_width_mm
     const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = event.target;
-        if (name === "estimated_band_width_mm") {
-            setFormData((prev) => ({
-                ...prev,
-                [name]: value,
-            }));
-        } else {
-            let floatValue = parseFloat(value);
-            if (isNaN(floatValue) || floatValue < 0) {
-                floatValue = 0.0;
-            }
-            setFormData((prev) => ({
-                ...prev,
-                [name]: floatValue,
-            }));
+        let floatValue = parseFloat(value);
+        if (isNaN(floatValue) || floatValue < 0) floatValue = 0.0;
+        setFormData(prev => ({
+            ...prev,
+            [name]: floatValue,
+        }));
+        if (name === 'estimated_band_width_mm') {
+            setManualBandWidthOverride(true);
         }
     };
+
+    // Dynamically compute estimated_band_width_mm when related inputs change unless user overrode it.
+    useEffect(() => {
+        if (manualBandWidthOverride) return; // respect manual override
+        const { crop_top_mm, first_band_mm, band_spacing_mm, num_bands } = formData;
+        // Available migration length after first band application
+        const available = Math.max(0, crop_top_mm - first_band_mm);
+        const totalSpacing = Math.max(0, (num_bands - 1) * band_spacing_mm);
+        const rawWidth = available > totalSpacing && num_bands > 0
+            ? (available - totalSpacing) / num_bands
+            : 0;
+        const width = Number.isFinite(rawWidth) && rawWidth > 0 ? parseFloat(rawWidth.toFixed(4)) : 0.0;
+        setFormData(prev => ({ ...prev, estimated_band_width_mm: width }));
+    }, [formData.crop_top_mm, formData.first_band_mm, formData.band_spacing_mm, formData.num_bands, manualBandWidthOverride]);
 
     return (
         
@@ -324,12 +342,17 @@ useEffect(() => {
                                 <span className="label-text">Estimated Band Width (mm)</span>
                             </label>
                             <input
-                                type="text"
+                                type="number"
                                 name="estimated_band_width_mm"
                                 value={formData.estimated_band_width_mm}
+                                min={0}
+                                step={0.01}
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.estimated_band_width_mm ? 'input-error' : ''}`}
                             />
+                            {!manualBandWidthOverride && (
+                                <p className="text-xs text-neutral-500 mt-1">Auto-calculated. Change value to override.</p>
+                            )}
                         </div>
                     </form>
 

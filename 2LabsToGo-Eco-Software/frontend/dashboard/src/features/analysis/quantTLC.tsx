@@ -721,7 +721,7 @@ const recalcQuantityValues = useCallback(() => {
     console.log('[useEffect] No selectedPeak, skipping recalc');
     return;
   }
-          console.log('[useEffect] Recalculating quantity values for selectedPeak:', selectedPeak);
+  console.log('[useEffect] Recalculating quantity values for selectedPeak:', selectedPeak);
   recalcQuantityValues();
 }, [selectedPeak, allPeaksOverAllData, preprocessedData, totalTracks, quantityMetric, areaWindow, recalcQuantityValues, regionAreasByTrack]);
 

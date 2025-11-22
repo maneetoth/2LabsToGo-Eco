@@ -1,9 +1,10 @@
 import numpy as np
-from scipy.optimize import curve_fit
-# import matplotlib.pyplot as plt
-# import matplotlib
-# matplotlib.use('TkAgg')
-# import seaborn as sns
+from scipy.optimize import curve_fit, OptimizeWarning
+import matplotlib
+matplotlib.use('Agg')  # non-GUI backend for thread-safe offscreen rendering
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
 
 # 1. Model definitions
 def hill_function(x, vmax, kd, h):
@@ -44,60 +45,84 @@ def fit_calibration_curve(concentrations, peak_areas, model_type='hill'):
     if model_type == 'hill':
         initial_guess = [peak_areas.max(), np.median(concentrations), 1.0]
         model_func = hill_function
+        bounds = ([0.0, 0.0, 0.01], [np.inf, np.inf, 10.0])
     elif model_type == 'mm_origin':
         initial_guess = [peak_areas.max(), np.median(concentrations)]
         model_func = michaelis_menten_origin
+        bounds = ([0.0, 0.0], [np.inf, np.inf])
     elif model_type == 'mm_intercept':
         initial_guess = [peak_areas.max(), np.median(concentrations), 0.0]
         model_func = michaelis_menten_intercept
+        bounds = ([0.0, 0.0, -np.inf], [np.inf, np.inf, np.inf])
     elif model_type == 'linear':
         m0 = peak_areas.max() / concentrations.max()
         initial_guess = [m0, 0.0]
         model_func = linear
+        bounds = ([-np.inf, -np.inf], [np.inf, np.inf])
     elif model_type == 'linear_origin':
         m0 = peak_areas.max() / concentrations.max()
         initial_guess = [m0]
         model_func = linear_origin
+        bounds = ([0.0], [np.inf])
     else:
         raise ValueError("Invalid model type. Choose 'hill', 'mm_origin', 'mm_intercept', 'linear', or 'linear_origin'.")
 
-    consts, pcov = curve_fit(model_func, concentrations, peak_areas, p0=initial_guess)
-   
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", OptimizeWarning)
+        consts, pcov = curve_fit(
+            model_func,
+            concentrations,
+            peak_areas,
+            p0=initial_guess,
+            bounds=bounds,
+            maxfev=20000
+        )
     return consts, model_func
 
 # 3. Predict concentrations for unknown peaks
 def predict_concentration(peak_values, consts, model_type='hill'):
     """
     Given peak areas, invert the fitted model to estimate concentrations.
-
-    Parameters:
-        peak_values (array-like): Peak areas to invert.
-        popt (ndarray): Fitted parameters from curve fitting.
-        model_type (str): Same model used for fitting.
-
-    Returns:
-        predictions (ndarray): Estimated concentrations.
+    Returns NaN for out-of-domain inputs (e.g., y >= vmax).
     """
     y = np.asarray(peak_values, dtype=float)
+    preds = np.full_like(y, np.nan, dtype=float)
+    eps = np.finfo(float).eps
+
     if model_type == 'hill':
         vmax, kd, h = consts
-        xh = (y * kd) / (vmax - y)
-        return xh**(1.0 / h)
+        h = max(float(h), 1e-6)
+        valid = (y > 0) & (y < vmax)
+        denom = np.maximum(vmax - y[valid], eps)
+        xh = (y[valid] * kd) / denom
+        preds[valid] = np.power(xh, 1.0 / h)
+        preds[y <= 0] = 0.0
     elif model_type == 'mm_origin':
         vmax, km = consts
-        return (km * y) / (vmax - y)
+        valid = (y >= 0) & (y < vmax)
+        denom = np.maximum(vmax - y[valid], eps)
+        preds[valid] = (km * y[valid]) / denom
+        preds[y == 0] = 0.0
     elif model_type == 'mm_intercept':
         vmax, km, y0 = consts
         y_adj = y - y0
-        return (km * y_adj) / (vmax - y_adj)
+        valid = (y_adj > 0) & (y_adj < vmax)
+        denom = np.maximum(vmax - y_adj[valid], eps)
+        preds[valid] = (km * y_adj[valid]) / denom
+        preds[y_adj <= 0] = np.nan
     elif model_type == 'linear':
         m, b = consts
-        return (y - b) / m
+        denom = m if abs(m) > eps else np.nan
+        preds = (y - b) / denom
     elif model_type == 'linear_origin':
         m, = consts
-        return y / m
+        denom = m if abs(m) > eps else np.nan
+        preds = y / denom
     else:
         raise ValueError(f"Invalid model_type: {model_type}")
+
+    return preds
+
 # 4. Equation formatting
 def get_superscript(num: int) -> str:
     sup = {"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵",
@@ -130,8 +155,8 @@ def calibrate_and_predict(
     import base64
     from io import BytesIO
     import numpy as np
-    # import matplotlib.pyplot as plt
-    # import seaborn as sns
+    import matplotlib.pyplot as plt
+    import seaborn as sns
     from sklearn.metrics import r2_score, mean_squared_error
 
     # --- Fit model & predict ---
@@ -139,14 +164,30 @@ def calibrate_and_predict(
     preds = predict_concentration(unknown_peaks, popt, model_type)
 
     popt_list = np.asarray(popt).tolist()
-    preds_list = np.asarray(preds).tolist()
+    # filter invalid predictions before plotting/limits
+    preds_arr = np.asarray(preds, dtype=float)
+    unknown_arr = np.asarray(unknown_peaks, dtype=float)
+    valid_mask = np.isfinite(preds_arr)
+    preds_list = preds_arr[valid_mask].tolist()
+    unknown_valid = unknown_arr[valid_mask].tolist()
+
     equation_str = get_equation_string(popt_list, model_type)
 
     # --- Curve data ---
-    all_x = np.array(list(known_conc) + list(preds_list))
-    all_y = np.array(list(known_peaks) + list(unknown_peaks))
-    x_min, x_max = float(np.min(all_x)), float(np.max(all_x))
-    y_min, y_max = float(np.min(all_y)), float(np.max(all_y))
+    known_x = np.asarray(known_conc, dtype=float)
+    known_y = np.asarray(known_peaks, dtype=float)
+
+    if len(preds_list) > 0:
+        all_x = np.concatenate([known_x, np.asarray(preds_list, dtype=float)])
+        all_y = np.concatenate([known_y, np.asarray(unknown_valid, dtype=float)])
+    else:
+        all_x = known_x
+        all_y = known_y
+
+    x_min = float(np.nanmin(all_x)) if all_x.size else 0.0
+    x_max = float(np.nanmax(all_x)) if all_x.size else 1.0
+    y_min = float(np.nanmin(known_y)) if known_y.size else 0.0
+    y_max = float(np.nanmax(all_y)) if all_y.size else 1.0
 
     x_margin = (x_max - x_min) * 0.15 if x_max > x_min else 2
     y_margin = (y_max - y_min) * 0.15 if y_max > y_min else 2
@@ -160,41 +201,43 @@ def calibrate_and_predict(
     # Extend curve range slightly beyond the largest data point for visibility
     x_range = np.linspace(curve_x_min, x_max + x_margin, 300)
     y_fit = model_func(x_range, *popt)
+    y_fit = np.asarray(y_fit, dtype=float)
+    y_fit[~np.isfinite(y_fit)] = np.nan
 
     # --- Calculate R2 and RMSE on known data ---
-    y_pred_known = model_func(np.array(known_conc), *popt)
+    y_pred_known = model_func(np.array(known_conc, dtype=float), *popt)
     r2 = r2_score(known_peaks, y_pred_known)
-    rmse = mean_squared_error(known_peaks, y_pred_known)
+    rmse = float(np.sqrt(mean_squared_error(known_peaks, y_pred_known)))
 
     # --- Seaborn plot ---
-    # plt.figure(figsize=(8, 5))
-    # sns.scatterplot(x=known_conc, y=known_peaks, color='red', label='Known Data')
-    # sns.lineplot(x=x_range, y=y_fit, color='blue', label='Fitted Curve')
-    # sns.scatterplot(x=preds_list, y=unknown_peaks, color='green', marker='X', s=100, label='Predicted')
-    # plt.xlabel('Concentration')
-    # plt.ylabel('Peak Area')
-    # plt.title('Calibration Curve')
-    # plt.grid(True)
-    # plt.legend()
-    # plt.tight_layout()
-    # plt.xlim(x_min, x_max + x_margin * 1.2)
-    # plt.ylim(0, y_max + y_margin * 1.2)  # <-- y-axis always starts at 0
+    plt.figure(figsize=(8, 5))
+    sns.scatterplot(x=known_conc, y=known_peaks, color='red', label='Known Data')
+    sns.lineplot(x=x_range, y=y_fit, color='blue', label='Fitted Curve')
+    if len(preds_list) > 0:
+        sns.scatterplot(x=preds_list, y=unknown_valid, color='green', marker='X', s=100, label='Predicted')
+    plt.xlabel('Concentration')
+    plt.ylabel('Peak Area')
+    plt.title('Calibration Curve')
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.xlim(x_min, x_max + x_margin * 1.2)
+    plt.ylim(0, y_max + y_margin * 1.2)
     buf = BytesIO()
-    # plt.savefig(buf, format='png')
-    # plt.close()
+    plt.savefig(buf, format='png')
+    plt.close()
     buf.seek(0)
     plot_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
     # --- Result ---
-    # show_base64_image(plot_base64)
     return {
         'known_data': {
             'concentrations': list(map(float, known_conc)),
             'peak_areas': list(map(float, known_peaks))
         },
         'predictions': {
-            'concentrations': preds_list,
-            'peak_areas': list(map(float, unknown_peaks)),
+            'concentrations': preds_arr[valid_mask].astype(float).tolist(),
+            'peak_areas': list(map(float, np.asarray(unknown_valid, dtype=float))),
             'equation': equation_str
         },
         'model_type': model_type,

@@ -391,7 +391,7 @@ def Raw_densitogram(request):
         first_band_mm=float(first_band_mm),
         band_spacing_mm=float(band_spacing_mm),
         num_bands=float(num_bands),
-        estimated_band_width_mm=None
+        estimated_band_width_mm=estimated_band_width_mm
     )
     hauteur_val = 100
     Zf_val = 60
@@ -469,7 +469,7 @@ def Processed_densitogram(request):
         # Return the processed data as a JSON response
         return JsonResponse({"processed_data": processed_data}, safe=False)
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({"error": str(e), "preprocess_option": preprocess_order}, status=500)
 @api_view(['POST'])
 def calibrate(request):
     """
