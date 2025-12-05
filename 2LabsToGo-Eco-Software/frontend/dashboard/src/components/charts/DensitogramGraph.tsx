@@ -103,7 +103,7 @@ const DensitogramGraph = ({
         <h2 className="text-xl font-semibold text-center">Densitogram</h2>
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={formatedDensitogram}>
-            <XAxis dataKey="hRF" label={{ value: "Pixel Index (hRF)", position: "insideBottom", offset: -5 }} />
+            <XAxis dataKey="hRF" label={{ value: "hRF", position: "insideBottom", offset: -5 }} />
             <YAxis label={{ value: "Pixel Intensity (AU)", angle: -90, position: "insideLeft" }} />
             <Tooltip />
             <Legend />

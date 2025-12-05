@@ -70,14 +70,13 @@ export function detectPeaks(
 ): DataPoint[] {
   const { minIncreasingSteps, minDecreasingSteps, minPeakHeight, hrfRange } = params;
   const peaks: DataPoint[] = [];
-    // console.log('---------------------');
-    // console.log(data);
-    
-    
+  console.log('--- detectPeaks called ---');
+  console.log('Params:', { minIncreasingSteps, minDecreasingSteps, minPeakHeight, hrfRange });
   // Filter data to hrfRange
   const filteredData = data.filter(
     (point) => point.x >= hrfRange[0] && point.x <= hrfRange[1]
   );
+  console.log('Filtered data points:', filteredData.length, filteredData);
 
   for (let i = 0; i < filteredData.length; i++) {
     let isIncreasing = true;
@@ -112,9 +111,25 @@ export function detectPeaks(
       filteredData[i].y >= minPeakHeight
     ) {
       peaks.push(filteredData[i]);
+      console.log(
+        `Selected peak at index ${i}:`,
+        filteredData[i],
+        '| isIncreasing:', isIncreasing,
+        '| isDecreasing:', isDecreasing,
+        '| y:', filteredData[i].y
+      );
+    } else {
+      console.log(
+        `Rejected point at index ${i}:`,
+        filteredData[i],
+        '| isIncreasing:', isIncreasing,
+        '| isDecreasing:', isDecreasing,
+        '| y:', filteredData[i].y
+      );
     }
   }
 
+  console.log('Detected peaks:', peaks);
   return peaks;
 }
 

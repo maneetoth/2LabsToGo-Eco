@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeftIcon, ArrowRightIcon } from "@heroicons/react/24/outline"; // Import Heroicons
 import axios from 'axios';
@@ -17,17 +17,7 @@ const Dashboard: React.FC = () => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const router = useRouter()
     const dispatch = useDispatch<AppDispatch>()
-    interface FormDataShape {
-        real_width_mm: number;
-        real_height_mm: number;
-        crop_bottom_mm: number;
-        crop_top_mm: number;
-        first_band_mm: number;
-        band_spacing_mm: number;
-        num_bands: number;
-        estimated_band_width_mm: number;
-    }
-    const [formData, setFormData] = useState<FormDataShape>({
+    const [formData, setFormData] = useState({
         real_width_mm: 200.0,
         real_height_mm: 100.0,
         crop_bottom_mm: 8.0,
@@ -45,35 +35,31 @@ const Dashboard: React.FC = () => {
     const [preprocessedData, setPreprocessedData] = useState<PreprocessedOutput | null>(null);
     const [bandStep, setBandStep] = useState(1);
 
-        const validateForm = () => {
-                const errors: { [key: string]: string } = {};
-
-                if (images.length === 0) {
-                        errors.image = "Please select at least one image.";
-                }
-
-                Object.entries(formData).forEach(([key, raw]) => {
-                        const value = raw as number;
-                        if (!Number.isFinite(value)) {
-                                errors[key] = "Value must be a finite number.";
-                                return;
-                        }
-                        if (value < 0) {
-                                errors[key] = "Value must be non-negative.";
-                                return;
-                        }
-                        if (key === 'num_bands' && (value < 1 || !Number.isInteger(value))) {
-                                errors[key] = "Number of bands must be a positive integer.";
-                        }
-                });
-
-                if (!manualBandWidthOverride && formData.estimated_band_width_mm === 0) {
-                        errors.estimated_band_width_mm = "Estimated width computed as 0; adjust inputs or override.";
-                }
-
-                setFormErrors(errors);
-                return Object.keys(errors).length === 0;
-        };
+    const validateForm = () => {
+        const errors: { [key: string]: string } = {};
+      
+        if (images.length === 0) {
+          errors.image = "Please select at least one image.";
+        }
+      
+        Object.entries(formData).forEach(([key, value]) => {
+          const val = value as any;
+          if (val === '' || val === null) {
+            errors[key] = "This field is required.";
+          } else if (key !== 'estimated_band_width_mm' && typeof val === 'number' && val < 0) {
+            errors[key] = "Value must be non-negative.";
+        } else if (
+            key === 'estimated_band_width_mm' &&
+            val !== 'none' &&
+            isNaN(parseFloat(String(val)))
+          ) {
+            errors[key] = "Must be a number or 'none'.";
+          }
+        });
+      
+        setFormErrors(errors);
+        return Object.keys(errors).length === 0;
+      };
       
 
 
@@ -156,7 +142,14 @@ useEffect(() => {
       
           if (response) {
             const fullImageUrl = `http://localhost:8000${response.image_url}`;
-            router.push(`/analysis/quant?image=${encodeURIComponent(fullImageUrl)}`);
+            
+            const queryParams = new URLSearchParams();
+            queryParams.append('image', fullImageUrl);
+            Object.entries(formData).forEach(([key, value]) => {
+                queryParams.append(key, value.toString());
+            });
+
+            router.push(`/analysis/quant?${queryParams.toString()}`);
           }
         } catch (error) {
           console.error('Error uploading image:', error);
@@ -358,9 +351,9 @@ useEffect(() => {
 
                     {/* Action Buttons */}
                     <div className="flex justify-center gap-4 mt-6">
-                        <button className="btn btn-primary">Move to RTLC</button>
+                        {/* <button className="btn btn-primary">Move to RTLC</button> */}
                         <button className="btn btn-secondary" onClick={handleQuantTLC}>
-                            Move to QuantTLC
+                            Next
                         </button>
                     </div>
                 </>

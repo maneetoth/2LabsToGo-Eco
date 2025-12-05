@@ -59,6 +59,22 @@ const preprocessingLabelByValue: Record<PreprocessValue, string> =
   };
   
 const QuantTLC: React.FC = () => {
+  // Channel selection state
+  const channelOptions = [
+    { label: "Red", value: "red" },
+    { label: "Green", value: "green" },
+    { label: "Blue", value: "blue" },
+    { label: "Grayscale", value: "grayscale" },
+  ];
+  const [selectedChannels, setSelectedChannels] = useState<string[]>(["red", "green", "blue", "grayscale"]);
+
+  const handleChannelToggle = (channel: string) => {
+    setSelectedChannels((prev) =>
+      prev.includes(channel)
+        ? prev.filter((ch) => ch !== channel)
+        : [...prev, channel]
+    );
+  };
     const searchParams = useSearchParams();
     const imageUrl = searchParams.get("image"); // Get the image URL from search params
 const dispatch = useDispatch<AppDispatch>()
@@ -142,22 +158,15 @@ const [advancedOptions, setAdvancedOptions] = useState({
 });
 
   const [formData, setFormData] = useState({
-        real_width_mm: 200.0,
-        real_height_mm: 100.0,
-        crop_bottom_mm: 8.0,
-        crop_top_mm: 60.0,
-        first_band_mm: 16.0,
-        band_spacing_mm: 10.5,
-        num_bands: 17.0,
-        estimated_band_width_mm: 'none'
-        // real_width_mm:"",
-        // real_height_mm: "",
-        // crop_bottom_mm: "",
-        // crop_top_mm: "",
-        // first_band_mm: "",
-        // band_spacing_mm: "",
-        // num_bands: "",
-        // estimated_band_width_mm: 'none'
+        real_width_mm: parseFloat(searchParams.get("real_width_mm") || "200.0"),
+        real_height_mm: parseFloat(searchParams.get("real_height_mm") || "100.0"),
+        crop_bottom_mm: parseFloat(searchParams.get("crop_bottom_mm") || "8.0"),
+        crop_top_mm: parseFloat(searchParams.get("crop_top_mm") || "60.0"),
+        first_band_mm: parseFloat(searchParams.get("first_band_mm") || "16.0"),
+        band_spacing_mm: parseFloat(searchParams.get("band_spacing_mm") || "10.5"),
+        num_bands: parseFloat(searchParams.get("num_bands") || "17.0"),
+        // dynamically computed; always kept as positive float
+        estimated_band_width_mm: parseFloat(searchParams.get("estimated_band_width_mm") || "0.0"),
     });
     const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
 
@@ -908,23 +917,17 @@ const handleFinishEdit = () => {
   
 };
 const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        const { name, value } = event.target;
-        if (name === "estimated_band_width_mm") {
-            setFormData((prev) => ({
-                ...prev,
-                [name]: value,
-            }));
-        } else {
-            let floatValue = parseFloat(value);
-            if (isNaN(floatValue) || floatValue < 0) {
-                floatValue = 0.0;
-            }
-            setFormData((prev) => ({
-                ...prev,
-                [name]: floatValue,
-            }));
-        }
-    };
+    const { name, value } = event.target;
+    // All fields in formData are stored as numbers; parse input accordingly
+    let floatValue = parseFloat(value);
+    if (isNaN(floatValue) || floatValue < 0) {
+      floatValue = 0.0;
+    }
+    setFormData((prev) => ({
+      ...prev,
+      [name]: floatValue,
+    }));
+  };
 const validateForm = () => {
         const errors: { [key: string]: string } = {};
       
@@ -933,14 +936,15 @@ const validateForm = () => {
         // }
       
         Object.entries(formData).forEach(([key, value]) => {
-          if (value === '' || value === null) {
+          const val = value as any;
+          if (val === '' || val === null) {
             errors[key] = "This field is required.";
-          } else if (key !== 'estimated_band_width_mm' && typeof value === 'number' && value < 0) {
+          } else if (key !== 'estimated_band_width_mm' && typeof val === 'number' && val < 0) {
             errors[key] = "Value must be non-negative.";
         } else if (
             key === 'estimated_band_width_mm' &&
-            value !== 'none' &&
-            isNaN(parseFloat(String(value)))
+            val !== 'none' &&
+            isNaN(parseFloat(String(val)))
           ) {
             errors[key] = "Must be a number or 'none'.";
           }
@@ -2062,64 +2066,88 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
             />
         </div> */}
 
-      {/* Densitogram Graphs */}
+      {/* Channel Multi-Select */}
+      <div className="mb-4 flex flex-wrap gap-4 items-center">
+        <span className="font-medium mr-2">Select Channels:</span>
+        {channelOptions.map((opt) => (
+          <label key={opt.value} className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              className="checkbox"
+              checked={selectedChannels.includes(opt.value)}
+              onChange={() => handleChannelToggle(opt.value)}
+            />
+            <span className="capitalize">{opt.label}</span>
+          </label>
+        ))}
+      </div>
+
+      {/* Densitogram Graphs - Only show selected channels */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <div className="w-full">
-      <D3InteractiveChart
-        data={redData}
-            lineColor="red"
-            fillColor="rgba(255, 0, 0, 0.3)"
-            selectedPeakRef={peakRef}
-            channelName="red"
-            bandstep={bandStep}
-            ref={chartRef}
-            peakParams={peakParams}
-            allPeaks={allPeaksRef.current}
-            onRegionsChange={handleRegionsChange}
-          />
-        </div>
-        <div className="w-full">
-      <D3InteractiveChart
-        data={blueData}
-            lineColor="blue"
-            fillColor="rgba(0, 0, 255, 0.4)"
-            selectedPeakRef={peakRef}
-            channelName="blue"
-            bandstep={bandStep}
-            ref={chartRef}
-            peakParams={peakParams}
-            allPeaks={allPeaksRef.current}
-            onRegionsChange={handleRegionsChange}
-          />
-        </div>
-        <div className="w-full">
-      <D3InteractiveChart
-        data={greenData}
-            lineColor="green"
-            fillColor="rgba(0, 255, 0, 0.3)"
-            selectedPeakRef={peakRef}
-            channelName="green"
-            bandstep={bandStep}
-            ref={chartRef}
-            peakParams={peakParams}
-            allPeaks={allPeaksRef.current}
-            onRegionsChange={handleRegionsChange}
-          />
-        </div>
-        <div className="w-full">
-      <D3InteractiveChart
-        data={grayData}
-            lineColor="gray"
-            fillColor="rgba(128, 0, 128, 0.3)"
-            selectedPeakRef={peakRef}
-            channelName="grayscale"
-            bandstep={bandStep}
-            ref={chartRef}
-            peakParams={peakParams}
-            allPeaks={allPeaksRef.current}
-            onRegionsChange={handleRegionsChange}
-          />
-        </div>
+        {selectedChannels.includes("red") && (
+          <div className="w-full">
+            <D3InteractiveChart
+              data={redData}
+              lineColor="red"
+              fillColor="rgba(255, 0, 0, 0.3)"
+              selectedPeakRef={peakRef}
+              channelName="red"
+              bandstep={bandStep}
+              ref={chartRef}
+              peakParams={peakParams}
+              allPeaks={allPeaksRef.current}
+              onRegionsChange={handleRegionsChange}
+            />
+          </div>
+        )}
+        {selectedChannels.includes("blue") && (
+          <div className="w-full">
+            <D3InteractiveChart
+              data={blueData}
+              lineColor="blue"
+              fillColor="rgba(0, 0, 255, 0.4)"
+              selectedPeakRef={peakRef}
+              channelName="blue"
+              bandstep={bandStep}
+              ref={chartRef}
+              peakParams={peakParams}
+              allPeaks={allPeaksRef.current}
+              onRegionsChange={handleRegionsChange}
+            />
+          </div>
+        )}
+        {selectedChannels.includes("green") && (
+          <div className="w-full">
+            <D3InteractiveChart
+              data={greenData}
+              lineColor="green"
+              fillColor="rgba(0, 255, 0, 0.3)"
+              selectedPeakRef={peakRef}
+              channelName="green"
+              bandstep={bandStep}
+              ref={chartRef}
+              peakParams={peakParams}
+              allPeaks={allPeaksRef.current}
+              onRegionsChange={handleRegionsChange}
+            />
+          </div>
+        )}
+        {selectedChannels.includes("grayscale") && (
+          <div className="w-full">
+            <D3InteractiveChart
+              data={grayData}
+              lineColor="gray"
+              fillColor="rgba(128, 0, 128, 0.3)"
+              selectedPeakRef={peakRef}
+              channelName="grayscale"
+              bandstep={bandStep}
+              ref={chartRef}
+              peakParams={peakParams}
+              allPeaks={allPeaksRef.current}
+              onRegionsChange={handleRegionsChange}
+            />
+          </div>
+        )}
       </div>
       {/* Finish Edit Button
       <div className="flex justify-end mt-4">
