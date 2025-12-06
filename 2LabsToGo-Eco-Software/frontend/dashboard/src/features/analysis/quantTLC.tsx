@@ -5,7 +5,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import IndividualLineChart from "@/components/charts/IndividualLineChart";
-import D3InteractiveChart, { D3InteractiveChartHandle } from "@/components/charts/peak-linechart";
+import D3InteractiveChart, { D3InteractiveChartHandle, PeakAreaChangeInfo } from "@/components/charts/peak-linechart";
 import * as d3 from "d3";
 import ImageCropper from "@/components/Image/ImageCropper";
 import { useDispatch, useSelector } from 'react-redux'
@@ -25,6 +25,15 @@ import {
 import { detectPeaks, isPeakInAllTracks, PeakDetectionParams, processAllBands, processAllTracksFromPreprocessed, validatePeakSelection, DataPoint } from "@/utils/peakDetection";
 import { ChannelName } from "@/utils/peakDetection"; 
 import { Sriracha } from "next/font/google";
+import {
+  PeakDetectionApiResponse,
+  PeakDetectionApiParams,
+  AllTracksChartPeaks,
+  ChartPeak,
+  ChangeAreaItem,
+  transformApiPeaksToChartPeaks,
+  getChannelPeaks,
+} from "@/types/peakApi";
 import { validateHeaderValue } from "http";
 import CalibrationCurve from "@/components/charts/Calibration";
 import { base64ToDataUrl } from "@/utils/cropImage";
@@ -118,6 +127,29 @@ const [quantityMetric, setQuantityMetric] = useState<'height' | 'area'>('height'
 // Window (in samples) to integrate around peak x when using area
 const [areaWindow, setAreaWindow] = useState<number>(5);
 const [preprocessedData, setPreprocessedData] = useState<PreprocessedOutput | null>(null);
+
+// API-based peak detection state
+const [apiPeakParams, setApiPeakParams] = useState<PeakDetectionApiParams>({
+  min_peak_height:null,
+  peak_threshold: null,
+  distance_bw_peaks:null,
+  peak_prominence: null,
+  peak_width: null,
+  peak_wlen: null,
+  peak_el_height: null,
+  peak_plateau_size: null,
+  peak_Min_peak_area: null,
+  find_area: true,
+  change_area: [],
+});
+const [apiPeaksResponse, setApiPeaksResponse] = useState<PeakDetectionApiResponse | null>(null);
+const [apiPeaksLoading, setApiPeaksLoading] = useState(false);
+// Transformed peaks ready for chart consumption
+const apiChartPeaks = useMemo<AllTracksChartPeaks>(() => {
+  if (!apiPeaksResponse) return {};
+  return transformApiPeaksToChartPeaks(apiPeaksResponse);
+}, [apiPeaksResponse]);
+
 type CalibrationModel = 'none' | 'hill' | 'mm_origin' | 'mm_intercept' | 'linear' | 'linear_origin';
 const [modelType, setModelType] = useState<CalibrationModel>('none');
 const modelOptions: { value: CalibrationModel; label: string }[] = [
@@ -182,11 +214,11 @@ const chartRef = useRef<D3InteractiveChartHandle>(null);
 // Add UI alert state
 const [uiAlert, setUiAlert] = useState<{ type: 'warning' | 'error' | 'success'; message: string } | null>(null);
 const alertTimerRef = useRef<number | undefined>(undefined);
-const notify = (type: 'warning' | 'error' | 'success', message: string) => {
+const notify = useCallback((type: 'warning' | 'error' | 'success', message: string) => {
   setUiAlert({ type, message });
   if (alertTimerRef.current) window.clearTimeout(alertTimerRef.current);
   alertTimerRef.current = window.setTimeout(() => setUiAlert(null), 5000) as unknown as number;
-};
+}, []);
 // ...existing code...
 
 console.log("peakref",peakRef.current)
@@ -268,9 +300,7 @@ const handleWarpingMethodChange = (method: string) => {
 };
 
 const buildPreprocessOption = () => {
-  // ---- Baseline ----
-  // Map UI baseline.type to the API string for "type"
-  // Your sample uses "peakDetection" (camelCase) for PEAK_DETECTION.
+
   const baselineTypeMap: Record<string, string> = {
     PEAK_DETECTION: 'peakDetection',
     IRLS: 'irls',
@@ -365,10 +395,6 @@ const allPeaksRef = useRef<{
   grayscale: [],
 });
 
-// const handleProcessedData = (processeddata: { [channel: string]: DataPoint[] }) => {
-//   const allPeaks = processAllBands(processeddata, params);
-//   allPeaksRef.current = allPeaks;
-// };
 
 function convertChannelDataToDensitogramArray(channelData: { [channel: string]: DataPoint[] }): { hRF: number; red: number; green: number; blue: number; grayscale: number }[] {
   
@@ -582,6 +608,95 @@ const handlePreProcess = async () => {
   }
 };
 
+// API call to fetch peaks from server
+const fetchPeaksFromApi = useCallback(async () => {
+  if (!preprocessedData) {
+    console.warn('No preprocessed data available for peak detection');
+    return;
+  }
+
+  setApiPeaksLoading(true);
+  try {
+    const requestBody = {
+      params: apiPeakParams,
+      processed_data: preprocessedData,
+    };
+
+    const response = await axios.post<PeakDetectionApiResponse>(
+      'http://localhost/peak_integration/',
+      requestBody,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+    );
+
+    console.log('Peak Detection API Response:', response.data);
+    setApiPeaksResponse(response.data);
+    notify('success', 'Peak detection completed.');
+  } catch (err) {
+    console.error('Peak Detection API error:', err);
+    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
+    notify('error', `Peak detection failed${msg ? `: ${msg}` : ''}`);
+  } finally {
+    setApiPeaksLoading(false);
+  }
+}, [preprocessedData, apiPeakParams, notify]);
+
+// Handler for peak area changes from the chart component
+const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) => {
+  if (!preprocessedData) {
+    console.warn('No preprocessed data available for peak area change');
+    return;
+  }
+
+  console.log('Peak area changed:', changeInfo);
+
+  // Create the change_area item for API
+  const changeAreaItem: ChangeAreaItem = {
+    band_key: changeInfo.bandKey,
+    channel_name: changeInfo.channelName,
+    peak_index: changeInfo.peakIndex,
+    new_start: changeInfo.newStart,
+    new_end: changeInfo.newEnd,
+  };
+
+  // Update params with the change_area and call API
+  setApiPeaksLoading(true);
+  try {
+    const requestBody = {
+      params: {
+        ...apiPeakParams,
+        change_area: [changeAreaItem], // Send only this change for now
+      },
+      processed_data: preprocessedData,
+    };
+
+    console.log('Sending peak area change request:', requestBody);
+
+    const response = await axios.post<PeakDetectionApiResponse>(
+      'http://localhost/peak_integration/',
+      requestBody,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+    );
+
+    console.log('Peak Area Change API Response:', response.data);
+    setApiPeaksResponse(response.data);
+    notify('success', 'Peak area updated successfully.');
+  } catch (err) {
+    console.error('Peak Area Change API error:', err);
+    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
+    notify('error', `Peak area update failed${msg ? `: ${msg}` : ''}`);
+  } finally {
+    setApiPeaksLoading(false);
+  }
+}, [preprocessedData, apiPeakParams, notify]);
+
+// Automatically fetch peaks when preprocessed data changes
+useEffect(() => {
+  if (preprocessedData && Object.keys(preprocessedData).length > 0) {
+    fetchPeaksFromApi();
+  }
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [preprocessedData]); // intentionally not including fetchPeaksFromApi to avoid infinite loop
+
 console.log("preeeeeeeproceeesssededededed");
 
 console.log(preprocessedData);
@@ -603,6 +718,12 @@ console.log('allPeaksOverAllData',allPeaksOverAllData);
  const imageUrlBand = bandData[bandKey]?.image_url;
 
  console.log('ib',imageUrlBand);
+
+// Get current track's peaks from API response
+const currentTrackApiPeaks = useMemo(() => {
+  return apiChartPeaks[bandKey] ?? { red: [], green: [], blue: [], grayscale: [] };
+}, [apiChartPeaks, bandKey]);
+
 // Memoized series per channel to avoid re-allocating arrays every parent render
 const redData = useMemo(
   () => (preprocessedData?.[bandKey]?.red ?? []).map((y, x) => ({ x, y })),
@@ -621,33 +742,52 @@ const grayData = useMemo(
   [preprocessedData, bandKey]
 );
 
-// Flatten and map to table-ready format - use allPeaksOverAllData to show ALL peaks from ALL tracks
+// Flatten and map to table-ready format - API peaks only (fallback disabled)
 const allPeaksForTable = useMemo(() => {
-  return Object.entries(allPeaksOverAllData).flatMap(([trackKey, channels]) =>
-    Object.entries(channels as Record<string, DataPoint[]>).flatMap(([channel, peaks]) =>
-      (peaks as DataPoint[]).map((point, i) => {
-        const prevX = (peaks as DataPoint[])[i - 1]?.x ?? point.x;
-        const nextX = (peaks as DataPoint[])[i + 1]?.x ?? point.x;
-
-        // Get the band data for area calculation
-        const bandChannels = ((preprocessedData as unknown) as Record<string, Record<string, number[]>>)?.[trackKey];
-        const bandDataArr = bandChannels?.[channel]?.map((y, x) => ({ x, y })) || [];
-        const area = computePeakArea(bandDataArr, point.x, areaWindow);
-
-        return {
-          track: parseInt(trackKey) || 0,  // Use the actual track number from trackKey
+  // Use API peaks only
+  if (apiPeaksResponse && Object.keys(apiChartPeaks).length > 0) {
+    return Object.entries(apiChartPeaks).flatMap(([trackKey, channels]) =>
+      Object.entries(channels).flatMap(([channel, peaks]) =>
+        (peaks as ChartPeak[]).map((peak) => ({
+          track: parseInt(trackKey) || 0,
           channels: channel,
-          startHRF: prevX,
-          endHRF: nextX,
-          hRF: point.x,
-          height: point.y.toFixed(4),
-          area: area.toFixed(4),
-          quantity: quantityMetric === 'height' ? point.y.toFixed(4) : area.toFixed(4)
-        };
-      })
-    )
-  );
-}, [allPeaksOverAllData, preprocessedData, areaWindow, quantityMetric]);
+          startHRF: peak.startX,
+          endHRF: peak.endX,
+          hRF: peak.x,
+          height: peak.y.toFixed(4),
+          area: peak.area.toFixed(4),
+          quantity: quantityMetric === 'height' ? peak.y.toFixed(4) : peak.area.toFixed(4)
+        }))
+      )
+    );
+  }
+
+  // No API peaks - return empty array (fallback disabled)
+  return [];
+
+  // COMMENTED OUT: Fallback to client-side calculation - using API only
+  // return Object.entries(allPeaksOverAllData).flatMap(([trackKey, channels]) =>
+  //   Object.entries(channels as Record<string, DataPoint[]>).flatMap(([channel, peaks]) =>
+  //     (peaks as DataPoint[]).map((point, i) => {
+  //       const prevX = (peaks as DataPoint[])[i - 1]?.x ?? point.x;
+  //       const nextX = (peaks as DataPoint[])[i + 1]?.x ?? point.x;
+  //       const bandChannels = ((preprocessedData as unknown) as Record<string, Record<string, number[]>>)?.[trackKey];
+  //       const bandDataArr = bandChannels?.[channel]?.map((y, x) => ({ x, y })) || [];
+  //       const area = computePeakArea(bandDataArr, point.x, areaWindow);
+  //       return {
+  //         track: parseInt(trackKey) || 0,
+  //         channels: channel,
+  //         startHRF: prevX,
+  //         endHRF: nextX,
+  //         hRF: point.x,
+  //         height: point.y.toFixed(4),
+  //         area: area.toFixed(4),
+  //         quantity: quantityMetric === 'height' ? point.y.toFixed(4) : area.toFixed(4)
+  //       };
+  //     })
+  //   )
+  // );
+}, [quantityMetric, apiPeaksResponse, apiChartPeaks]);
 
 // Optional: filter with `filter` input
 const filteredPeaks = useMemo(() => 
@@ -679,6 +819,24 @@ console.log('resultStandards',resultStandards);
  // ...existing code...
 
 
+// Find closest peak from API peaks
+function getClosestApiPeak(
+  peaks: ChartPeak[] | undefined,
+  targetX: number
+): ChartPeak | null {
+  if (!Array.isArray(peaks) || peaks.length === 0 || !Number.isFinite(targetX)) return null;
+  let best = peaks[0];
+  let bestDiff = Math.abs(best.x - targetX);
+  for (let i = 1; i < peaks.length; i++) {
+    const d = Math.abs(peaks[i].x - targetX);
+    if (d < bestDiff) {
+      best = peaks[i];
+      bestDiff = d;
+    }
+  }
+  return best;
+}
+
 function getClosestPeakY(
   peaks: { x: number; y: number }[] | undefined,
   targetX: number
@@ -696,33 +854,55 @@ function getClosestPeakY(
   return Number.isFinite(best.y) ? best.y : 0;
 }
 
-// Recompute quantity values for each track depending on the metric selection
+// Recompute quantity values for each track depending on the metric selection - API only
 const recalcQuantityValues = useCallback(() => {
   if (!selectedPeak) return;
   const targetX = selectedPeak.peak?.x;
   const ch = selectedPeak.channel;
-  console.log(`[recalcQuantityValues] Computing for channel: ${ch}, targetX: ${targetX}, metric: ${quantityMetric}`);
+  console.log(`[recalcQuantityValues] Computing for channel: ${ch}, targetX: ${targetX}, metric: ${quantityMetric}, useApi: ${!!apiPeaksResponse}`);
   const next: Record<number, number> = {};
+  
   for (let i = 0; i < totalTracks; i++) {
     const bandKey = String(i + 1);
-    if (quantityMetric === 'height') {
-      const peaks = (allPeaksOverAllData as any)?.[bandKey]?.[ch] as { x: number; y: number }[] | undefined;
-      next[i] = getClosestPeakY(peaks, targetX);
-    } else {
-      // Use region area if available, otherwise compute area around peak
-      const regionArea = regionAreasByTrack[i]?.[ch];
-      if (regionArea !== undefined && regionArea > 0) {
-        next[i] = regionArea;
+    
+    // Use API peaks only
+    if (apiPeaksResponse && apiChartPeaks[bandKey]) {
+      const apiPeaksForChannel = apiChartPeaks[bandKey][ch as keyof typeof apiChartPeaks[typeof bandKey]];
+      const closestApiPeak = getClosestApiPeak(apiPeaksForChannel, targetX);
+      
+      if (closestApiPeak) {
+        if (quantityMetric === 'height') {
+          next[i] = closestApiPeak.y;
+        } else {
+          // Use region area if manually set, otherwise use API area
+          const regionArea = regionAreasByTrack[i]?.[ch];
+          next[i] = (regionArea !== undefined && regionArea > 0) ? regionArea : closestApiPeak.area;
+        }
       } else {
-        const series = (preprocessedData as any)?.[bandKey]?.[ch] as number[] | undefined;
-        const bandDataArr = series?.map((y: number, x: number) => ({ x, y })) ?? [];
-        next[i] = computePeakArea(bandDataArr, Math.round(targetX), areaWindow);
+        next[i] = 0; // No matching API peak found
       }
+    } else {
+      next[i] = 0; // No API data available
     }
+    
+    // COMMENTED OUT: Fallback to client-side calculation - using API only
+    // if (quantityMetric === 'height') {
+    //   const peaks = (allPeaksOverAllData as any)?.[bandKey]?.[ch] as { x: number; y: number }[] | undefined;
+    //   next[i] = getClosestPeakY(peaks, targetX);
+    // } else {
+    //   const regionArea = regionAreasByTrack[i]?.[ch];
+    //   if (regionArea !== undefined && regionArea > 0) {
+    //     next[i] = regionArea;
+    //   } else {
+    //     const series = (preprocessedData as any)?.[bandKey]?.[ch] as number[] | undefined;
+    //     const bandDataArr = series?.map((y: number, x: number) => ({ x, y })) ?? [];
+    //     next[i] = computePeakArea(bandDataArr, Math.round(targetX), areaWindow);
+    //   }
+    // }
   }
   console.log('[recalcQuantityValues] Computed values:', next);
   setQuantityValues(next);
-}, [selectedPeak, totalTracks, quantityMetric, allPeaksOverAllData, preprocessedData, areaWindow, regionAreasByTrack]);
+}, [selectedPeak, totalTracks, quantityMetric, regionAreasByTrack, apiPeaksResponse, apiChartPeaks]);
 
 
  useEffect(() => {
@@ -1798,10 +1978,123 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
 
 
-        {/* Peak Integration Section */}
+        {/* Peak Integration Section - API-based */}
         <div className="p-4 border rounded-lg shadow-md w-full mb-6">
-            <h2 className="text-lg font-semibold text-gray-700 mb-4">Peak Integration</h2>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-semibold text-gray-700">Peak Detection (API)</h2>
+              <button 
+                className={`btn btn-primary btn-sm ${apiPeaksLoading ? 'loading' : ''}`}
+                onClick={fetchPeaksFromApi}
+                disabled={apiPeaksLoading || !preprocessedData}
+              >
+                {apiPeaksLoading ? 'Detecting...' : 'Detect Peaks'}
+              </button>
+            </div>
 
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                        Min Peak Height
+                    </label>
+                    <input
+                        type="number"
+                        step="0.01"
+                        className="w-full border rounded p-2"
+                        value={apiPeakParams.min_peak_height ?? ''}
+                        onChange={(e) =>
+                          setApiPeakParams(prev => ({ ...prev, min_peak_height: parseFloat(e.target.value) || 0 }))
+                        }
+                    />
+                </div>
+
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                        Peak Prominence
+                    </label>
+                    <input
+                        type="number"
+                        step="0.01"
+                        className="w-full border rounded p-2"
+                        value={apiPeakParams.peak_prominence ?? ''}
+                        onChange={(e) =>
+                          setApiPeakParams(prev => ({ ...prev, peak_prominence: parseFloat(e.target.value) || 0 }))
+                        }
+                    />
+                </div>
+
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                        Distance Between Peaks
+                    </label>
+                    <input
+                        type="number"
+                        className="w-full border rounded p-2"
+                        value={apiPeakParams.distance_bw_peaks ?? ''}
+                        onChange={(e) =>
+                          setApiPeakParams(prev => ({ ...prev, distance_bw_peaks: parseInt(e.target.value) || 1 }))
+                        }
+                    />
+                </div>
+
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                        Min Peak Area
+                    </label>
+                    <input
+                        type="number"
+                        step="0.1"
+                        className="w-full border rounded p-2"
+                        value={apiPeakParams.peak_Min_peak_area ?? ''}
+                        onChange={(e) =>
+                          setApiPeakParams(prev => ({ ...prev, peak_Min_peak_area: parseFloat(e.target.value) || 0 }))
+                        }
+                    />
+                </div>
+
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                        Peak Width
+                    </label>
+                    <input
+                        type="number"
+                        className="w-full border rounded p-2"
+                        value={apiPeakParams.peak_width ?? ''}
+                        onChange={(e) =>
+                          setApiPeakParams(prev => ({ ...prev, peak_width: parseInt(e.target.value) || 1 }))
+                        }
+                    />
+                </div>
+
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                        Peak Threshold
+                    </label>
+                    <input
+                        type="number"
+                        step="0.01"
+                        className="w-full border rounded p-2"
+                        value={apiPeakParams.peak_threshold ?? ''}
+                        onChange={(e) =>
+                          setApiPeakParams(prev => ({ ...prev, peak_threshold: parseFloat(e.target.value) || 0 }))
+                        }
+                    />
+                </div>
+            </div>
+
+            {/* Status indicator */}
+            {apiPeaksResponse && (
+              <div className="mt-3 text-sm text-success">
+                ✓ {Object.keys(apiChartPeaks).length} tracks processed with peaks detected
+              </div>
+            )}
+        </div>
+
+        {/* Legacy Peak Integration Section (Client-side fallback) */}
+        <details className="collapse collapse-arrow border rounded-lg shadow-md w-full mb-6">
+          <summary className="collapse-title text-sm font-medium text-gray-500">
+            Advanced: Client-side Peak Detection (fallback)
+          </summary>
+          <div className="collapse-content p-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                     <label className="block text-sm font-medium text-gray-700">
@@ -1848,7 +2141,8 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                     />
                 </div>
             </div>
-        </div>
+          </div>
+        </details>
 
         {/* Peak Selection Section */}
         <div className="p-4 border rounded-lg shadow-md w-full mb-6">
@@ -1936,6 +2230,15 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                 {(() => {
                   const ch = selectedPeak.channel;
                   const bandKey = String(rowIndex + 1);
+                  
+                  // Prefer API peaks
+                  if (apiPeaksResponse && apiChartPeaks[bandKey]) {
+                    const apiPeaksForChannel = apiChartPeaks[bandKey][ch as keyof typeof apiChartPeaks[typeof bandKey]];
+                    const closestApiPeak = getClosestApiPeak(apiPeaksForChannel, selectedPeak.peak?.x);
+                    if (closestApiPeak) return closestApiPeak.y.toFixed(4);
+                  }
+                  
+                  // Fallback to client-side
                   const peaks = (allPeaksOverAllData as any)?.[bandKey]?.[ch] as { x: number; y: number }[] | undefined;
                   const peakHeight = getClosestPeakY(peaks, selectedPeak.peak?.x);
                   return Number.isFinite(peakHeight) ? peakHeight.toFixed(4) : "-";
@@ -1945,10 +2248,23 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               {/* Region Area Column */}
               <td>
                 {(() => {
-                  const regionArea = regionAreasByTrack[rowIndex]?.[selectedPeak.channel];
-                  return regionArea !== undefined && regionArea > 0 
-                    ? regionArea.toFixed(4) 
-                    : "-";
+                  const ch = selectedPeak.channel;
+                  const bandKey = String(rowIndex + 1);
+                  
+                  // First check manual region area
+                  const regionArea = regionAreasByTrack[rowIndex]?.[ch];
+                  if (regionArea !== undefined && regionArea > 0) {
+                    return regionArea.toFixed(4);
+                  }
+                  
+                  // Then try API peak area
+                  if (apiPeaksResponse && apiChartPeaks[bandKey]) {
+                    const apiPeaksForChannel = apiChartPeaks[bandKey][ch as keyof typeof apiChartPeaks[typeof bandKey]];
+                    const closestApiPeak = getClosestApiPeak(apiPeaksForChannel, selectedPeak.peak?.x);
+                    if (closestApiPeak) return closestApiPeak.area.toFixed(4);
+                  }
+                  
+                  return "-";
                 })()}
               </td>
               
@@ -2097,6 +2413,9 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               peakParams={peakParams}
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
+              onPeakAreaChange={handlePeakAreaChange}
+              apiPeaks={currentTrackApiPeaks.red}
+              useApiPeaks={!!apiPeaksResponse}
             />
           </div>
         )}
@@ -2113,6 +2432,9 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               peakParams={peakParams}
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
+              onPeakAreaChange={handlePeakAreaChange}
+              apiPeaks={currentTrackApiPeaks.blue}
+              useApiPeaks={!!apiPeaksResponse}
             />
           </div>
         )}
@@ -2129,6 +2451,9 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               peakParams={peakParams}
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
+              onPeakAreaChange={handlePeakAreaChange}
+              apiPeaks={currentTrackApiPeaks.green}
+              useApiPeaks={!!apiPeaksResponse}
             />
           </div>
         )}
@@ -2145,6 +2470,9 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               peakParams={peakParams}
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
+              onPeakAreaChange={handlePeakAreaChange}
+              apiPeaks={currentTrackApiPeaks.grayscale}
+              useApiPeaks={!!apiPeaksResponse}
             />
           </div>
         )}

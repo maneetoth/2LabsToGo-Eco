@@ -2,8 +2,26 @@ import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, Re
 import * as d3 from "d3";
 import { detectPeaks, DataPoint, PeakDetectionParams, validatePeakSelection, PeakData, PeakBand } from "@/utils/peakDetection";
 import { PencilSquareIcon, CheckIcon,TrashIcon } from '@heroicons/react/24/solid';
+import { ChartPeak, ChangeAreaItem } from "@/types/peakApi";
 
+// API-based peak type for the chart
+export interface ApiPeakForChart {
+  x: number;       // peak_x
+  y: number;       // peak_height
+  startX: number;  // start_end[0]
+  endX: number;    // start_end[1]
+  area: number;
+}
 
+// Info about a peak area change for API call
+export interface PeakAreaChangeInfo {
+  bandKey: string;
+  channelName: string;
+  peakIndex: number;  // Index of the peak (based on x position)
+  peakX: number;      // Original peak x position
+  newStart: number;
+  newEnd: number;
+}
 
 interface D3InteractiveChartProps {
   data: DataPoint[];
@@ -12,11 +30,16 @@ interface D3InteractiveChartProps {
   bandstep?: number;
   onPeaksChange?: (peaks: DataPoint[]) => void;
 onRegionsChange?: (regions: { x0: number; x1: number; area?: number; channel?: string }[]) => void;
+  // Callback when user confirms peak area edit (tick button clicked)
+  onPeakAreaChange?: (changeInfo: PeakAreaChangeInfo) => void;
 
   selectedPeakRef?: React.MutableRefObject<{ [channelName: string]: DataPoint[] }>;
   channelName?: string;
   peakParams?: PeakDetectionParams;
   allPeaks?: PeakBand;
+  // New props for API-based peaks
+  apiPeaks?: ChartPeak[];  // Peaks from API response for this channel
+  useApiPeaks?: boolean;   // Flag to use API peaks instead of client-side detection
 }
 
 export interface D3InteractiveChartHandle {
@@ -31,16 +54,23 @@ const D3InteractiveChart = forwardRef(function D3InteractiveChart(
     fillColor = "rgba(70,130,180,0.3)",
     onPeaksChange,
     onRegionsChange,
+    onPeakAreaChange,
     bandstep,
     channelName,
     selectedPeakRef,
     peakParams,
-    allPeaks
+    allPeaks,
+    apiPeaks,
+    useApiPeaks = false,
   }: D3InteractiveChartProps,
   ref: Ref<D3InteractiveChartHandle>
 ) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [editPeak, setEditPeak] = useState(false);
+  // Track original region states when editing starts (all regions)
+  const [editingRegionsOriginal, setEditingRegionsOriginal] = useState<
+    { x0: number; x1: number; peakX: number }[] | null
+  >(null);
 const [regions, setRegions] = useState<
   { x0: number; x1: number; area?: number; channel?: string }[]
 >([]);
@@ -90,17 +120,39 @@ useImperativeHandle(ref, () => ({
     hrfRange: [0, 1000],
   }), []);
 
-  const detectedPeaks = useMemo(
-    () => detectPeaks(preprocessedData, peakParams ?? defaultParams),
-    [preprocessedData, peakParams, defaultParams]
-  );
-  const peaks = peaksState.length > 0 ? peaksState : detectedPeaks;
+  // Client-side detected peaks (fallback) - COMMENTED OUT: using API only
+  // const detectedPeaks = useMemo(
+  //   () => detectPeaks(preprocessedData, peakParams ?? defaultParams),
+  //   [preprocessedData, peakParams, defaultParams]
+  // );
+  const detectedPeaks = useMemo<DataPoint[]>(() => [], []); // Empty - API only mode
+
+  // Convert API peaks to DataPoint format for rendering
+  const apiPeaksAsDataPoints = useMemo<DataPoint[]>(() => {
+    if (!apiPeaks || apiPeaks.length === 0) return [];
+    return apiPeaks.map(p => ({ x: p.x, y: p.y }));
+  }, [apiPeaks]);
+
+  // Use API peaks only - fallback disabled
+  const effectivePeaks = useMemo(() => {
+    // Always use API peaks when available
+    if (apiPeaks && apiPeaks.length > 0) {
+      console.log(`[D3Chart] Using ${apiPeaks.length} API peaks for ${channelName}`);
+      return apiPeaksAsDataPoints;
+    }
+    // No fallback - return empty if no API peaks
+    console.log(`[D3Chart] No API peaks available for ${channelName}`);
+    return [];
+  }, [apiPeaks, apiPeaksAsDataPoints, channelName]);
+
+  const peaks = effectivePeaks;
   console.log("pre:", preprocessedData);
   
   // console.log(fillColor);
   console.log('peaks',peaks);
   console.log("---------------------");
-  console.log('peaks',detectedPeaks);
+  console.log('detectedPeaks (client-side)',detectedPeaks);
+  console.log('apiPeaks (from server)', apiPeaks);
   console.log("---------------------");
   console.log('all peaks',allPeaks);
   
@@ -231,27 +283,51 @@ useEffect(() => {
     if (regions.length > 0) return;
 
     if (peaks.length > 0) {
-      const minSteps = (peakParams ?? defaultParams).minIncreasingSteps;
-      const newRegions = peaks
-        .map(peak => {
-          const idx = preprocessedData.findIndex(d => d.x === peak.x && d.y === peak.y);
-          if (idx === -1) return null;
-          const left  = Math.max(idx - minSteps, 0);
-          const right = Math.min(idx + minSteps, preprocessedData.length - 1);
-          return { x0: preprocessedData[left].x, x1: preprocessedData[right].x };
-        })
-        .filter((r): r is { x0: number; x1: number } => Boolean(r));
-
-      setRegions(newRegions);
-      setPeaksState(detectedPeaks); // sync peaksState with detectedPeaks on mount/reset
+      // If using API peaks, use the start_end bounds from the API
+      if (apiPeaks && apiPeaks.length > 0) {
+        const newRegions = apiPeaks
+          .map(peak => ({
+            x0: peak.startX,
+            x1: peak.endX,
+            area: peak.area,
+            channel: channelName ?? "unknown",
+          }))
+          .filter((r) => r.x0 !== undefined && r.x1 !== undefined);
+        
+        console.log(`[D3Chart] Initializing ${newRegions.length} regions from API for ${channelName}`);
+        setRegions(newRegions);
+        setPeaksState(apiPeaksAsDataPoints);
+      }
+      // COMMENTED OUT: Fallback to client-side calculation - using API only
+      // else {
+      //   const minSteps = (peakParams ?? defaultParams).minIncreasingSteps;
+      //   const newRegions = peaks
+      //     .map(peak => {
+      //       const idx = preprocessedData.findIndex(d => d.x === peak.x && d.y === peak.y);
+      //       if (idx === -1) return null;
+      //       const left  = Math.max(idx - minSteps, 0);
+      //       const right = Math.min(idx + minSteps, preprocessedData.length - 1);
+      //       return { x0: preprocessedData[left].x, x1: preprocessedData[right].x };
+      //     })
+      //     .filter((r): r is { x0: number; x1: number } => Boolean(r));
+      //
+      //   setRegions(newRegions);
+      //   setPeaksState(detectedPeaks);
+      // }
     }
-  }, [detectedPeaks, preprocessedData, regions.length, peakParams, defaultParams, peaks]);
+  }, [detectedPeaks, preprocessedData, regions.length, peakParams, defaultParams, peaks, useApiPeaks, apiPeaks, apiPeaksAsDataPoints, channelName]);
 
-  // Reset peaksState to detectedPeaks when peakParams change
+  // Reset peaksState when API peaks change - API only mode
   useEffect(() => {
-    setPeaksState(detectedPeaks);
+    if (apiPeaks && apiPeaks.length > 0) {
+      setPeaksState(apiPeaksAsDataPoints);
+    }
+    // COMMENTED OUT: Fallback - using API only
+    // else {
+    //   setPeaksState(detectedPeaks);
+    // }
     // Do not clear regions here to avoid wiping user selections unnecessarily
-  }, [peakParams, detectedPeaks]);
+  }, [apiPeaks, apiPeaksAsDataPoints]);
 
 
   useEffect(() => {
@@ -551,6 +627,58 @@ useEffect(() => {
       <button onClick={() => {
         setEditPeak(e => {
           const next = !e;
+          
+          if (next) {
+            // Starting edit mode - save ALL original region states
+            const originals = regions.map((region, idx) => {
+              const peakInRegion = peaksState.find(p => p.x >= region.x0 && p.x <= region.x1);
+              return {
+                x0: region.x0,
+                x1: region.x1,
+                peakX: peakInRegion?.x ?? region.x0,
+              };
+            });
+            setEditingRegionsOriginal(originals);
+            console.log('[D3Chart] Entering edit mode, saved original regions:', originals);
+          } else {
+            // Finishing edit mode - check ALL regions for changes and call API for each changed one
+            console.log('[D3Chart] Exiting edit mode, checking for changes...');
+            console.log('[D3Chart] Original regions:', editingRegionsOriginal);
+            console.log('[D3Chart] Current regions:', regions);
+            
+            if (editingRegionsOriginal && onPeakAreaChange && bandstep !== undefined && channelName) {
+              regions.forEach((currentRegion, idx) => {
+                const original = editingRegionsOriginal[idx];
+                if (!original) return;
+                
+                const hasChanged = 
+                  Math.round(currentRegion.x0) !== Math.round(original.x0) || 
+                  Math.round(currentRegion.x1) !== Math.round(original.x1);
+                
+                if (hasChanged) {
+                  console.log(`[D3Chart] Region ${idx} changed: [${original.x0}, ${original.x1}] -> [${currentRegion.x0}, ${currentRegion.x1}]`);
+                  
+                  // Find the peak index based on position in apiPeaks
+                  const peakIndex = apiPeaks?.findIndex(p => 
+                    Math.abs(p.x - original.peakX) < 1
+                  ) ?? idx;
+                  
+                  // Pass the peak's x-value as peakIndex (API expects peak_x here)
+                  onPeakAreaChange({
+                    bandKey: String(bandstep),
+                    channelName: channelName,
+                    peakIndex: original.peakX,
+                    peakX: original.peakX,
+                    newStart: Math.round(currentRegion.x0),
+                    newEnd: Math.round(currentRegion.x1),
+                  });
+                }
+              });
+            }
+            // Clear the editing state
+            setEditingRegionsOriginal(null);
+          }
+          
           // Force overlays/handles update immediately
           setRegions(r => [...r]);
           return next;

@@ -27,6 +27,7 @@ urlpatterns = [
     path('Raw_densitogram/', Raw_densitogram, name='Raw_densitogram'),
     path('Processed_densitogram/',Processed_densitogram, name='Processed_densitogram'),
     path('calibrate/',calibrate, name='calibrate'),
+    path('peak_integration/',peak_integration,name='peak_integration'),
 
     path('csrf/', csrf, name='csrf'),
     

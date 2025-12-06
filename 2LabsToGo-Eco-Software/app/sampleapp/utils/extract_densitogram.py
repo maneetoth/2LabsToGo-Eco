@@ -702,10 +702,11 @@ def plot_before_preprocessing(
             print(f"Error: band_array has shape {band_array.shape}, expected 2 or 3 dimensions.")
             return {}
         ####################################################################################
-        r_densitogram = resample_to_100(r_densitogram)
-        g_densitogram = resample_to_100(g_densitogram)
-        b_densitogram = resample_to_100(b_densitogram)
-        grayscale_densitogram = resample_to_100(grayscale_densitogram)
+        r_densitogram = resample_to_100(r_densitogram)[::-1]    # reversing the list vlaues
+        g_densitogram = resample_to_100(g_densitogram)[::-1] 
+        b_densitogram = resample_to_100(b_densitogram)[::-1] 
+        grayscale_densitogram = resample_to_100(grayscale_densitogram)[::-1] 
+
 
 
         # Flip/rotate image

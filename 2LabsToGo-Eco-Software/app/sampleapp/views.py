@@ -30,7 +30,7 @@ from .utils.read_image import read_image
 from .utils.band_positions import Extract_band_positions
 from .utils.extract_densitogram import plot_before_preprocessing, densitogram_after_preprocessing
 from .utils.calibration_curve import *
-
+from .utils.peak_integration import get_peaks_and_area
 
 class SampleView(FormView):
     def get(self, request):
@@ -470,6 +470,76 @@ def Processed_densitogram(request):
         return JsonResponse({"processed_data": processed_data}, safe=False)
     except Exception as e:
         return JsonResponse({"error": str(e), "preprocess_option": preprocess_order}, status=500)
+    
+
+@api_view(['POST'])
+def peak_integration(request):
+    input_data = request.data
+    data = input_data.get("processed_data", {})
+    params = input_data.get("params", {})
+
+    # Retrieve peak parameters
+    min_peak_height = params.get("min_peak_height", None)
+    peak_threshold = params.get("peak_threshold", None)
+    distance_bw_peaks = params.get("distance_bw_peaks", None)
+    peak_prominence = params.get("peak_prominence", None)
+    peak_width = params.get("peak_width", None)
+    peak_wlen = params.get("peak_wlen", None)
+    peak_el_height = params.get("peak_el_height", None)
+    peak_plateau_size = params.get("peak_plateau_size", None)
+    peak_Min_peak_area = params.get("peak_Min_peak_area", None)
+    find_area = params.get("find_area", True)
+    change_area_list = params.get("change_area", [])  # Optional list of changes
+
+    band_dict = {}
+
+    # First, compute peaks normally
+    for band_key, band in data.items():
+        band_dict[band_key] = {}
+        for channel_name, channel_data in band.items():
+            if channel_name not in ["red", "green", "blue", "grayscale"]:
+                continue
+            band_peaks = get_peaks_and_area(
+                channel_data,
+                height=min_peak_height,
+                threshold=peak_threshold,
+                distance=distance_bw_peaks,
+                prominence=peak_prominence,
+                width=peak_width,
+                wlen=peak_wlen,
+                rel_height=peak_el_height,
+                plateau_size=peak_plateau_size,
+                Min_peak_area=peak_Min_peak_area,
+                find_area=find_area
+            )
+            band_dict[band_key][channel_name] = band_peaks
+
+    # Apply change_area updates if provided
+    for change in change_area_list:
+        band_key = change.get("band_key")
+        channel_name = change.get("channel_name")
+        peak_index = change.get("peak_index")
+        new_start = change.get("new_start")
+        new_end = change.get("new_end")
+
+        if not all([band_key, channel_name, peak_index]):
+            continue  # skip incomplete entries
+
+        # Check if the peak exists
+        if band_key in band_dict and channel_name in band_dict[band_key]:
+            if peak_index in band_dict[band_key][channel_name]:
+                # Update area
+                t = np.arange(len(data[band_key][channel_name]))
+                x = np.array(data[band_key][channel_name])
+                area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
+                band_dict[band_key][channel_name][peak_index]["start_end"] = (int(new_start), int(new_end))
+                band_dict[band_key][channel_name][peak_index]["area"] = area_val
+
+    return JsonResponse(band_dict)
+
+
+
+
 @api_view(['POST'])
 def calibrate(request):
     """
