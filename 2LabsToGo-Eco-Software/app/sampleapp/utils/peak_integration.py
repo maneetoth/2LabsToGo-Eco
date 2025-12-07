@@ -66,63 +66,59 @@ import numpy as np
 
 def update_peak_areas(x, existing_peaks_dict, find_area=True, Min_peak_area=None):
     """
-    Update peak areas if start or end of peaks change.
-    
+    Update peak areas strictly based on the start_end values provided
+    in existing_peaks_dict.
+
     Parameters
     ----------
     x : array-like
         Signal array
     existing_peaks_dict : dict
-        Dictionary returned by get_peaks_and_area
+        Dictionary with peak info: peak_x, peak_height, start_end, area
     find_area : bool
-        Whether to calculate area under peak
+        Whether to recalculate area
     Min_peak_area : float
-        Minimum peak area to keep
-    
+        Filter out peaks with area < Min_peak_area
     Returns
     -------
     updated_peaks_dict : dict
-        Peaks dictionary with updated areas
+        Updated peaks dictionary with recalculated areas
     """
+
     t = np.arange(len(x))
     updated_dict = {}
 
     for p_idx, peak_info in existing_peaks_dict.items():
+
         entry = {
             "peak_height": float(peak_info["peak_height"]),
             "peak_x": int(peak_info["peak_x"])
         }
 
         if find_area:
-            # Check if start_end exists
-            old_start_end = peak_info.get("start_end", (int(peak_info["peak_x"]), int(peak_info["peak_x"])))
-            start, end = old_start_end
 
-            # Recompute start and end based on slope
-            dx = np.diff(x)
-            new_start, new_end = int(peak_info["peak_x"]), int(peak_info["peak_x"])
-
-            while new_start > 0 and dx[new_start-1] > 0:
-                new_start -= 1
-            while new_end < len(dx) and dx[new_end] < 0:
-                new_end += 1
-
-            # Only recompute area if start/end changed
-            if new_start != start or new_end != end or "area" not in peak_info:
-                area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
+            # --- ✔ USE GIVEN start_end DIRECTLY ---
+            if "start_end" in peak_info:
+                start, end = peak_info["start_end"]
+                start, end = int(start), int(end)
             else:
-                area_val = float(peak_info.get("area", 0.0))
+                # fallback if missing
+                start = end = int(peak_info["peak_x"])
 
-            # Apply Min_peak_area filter
+            # --- ✔ RECALCULATE AREA ONLY BASED ON PROVIDED start/end ---
+            area_val = float(np.trapz(x[start:end+1], t[start:end+1]))
+
+            # --- Filter by Min_peak_area ---
             if Min_peak_area is not None and area_val < Min_peak_area:
                 continue
 
-            entry["start_end"] = (new_start, new_end)
+            entry["start_end"] = (start, end)
             entry["area"] = area_val
 
         updated_dict[int(p_idx)] = entry
 
     return updated_dict
+
 
 
 

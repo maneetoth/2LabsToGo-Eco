@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, Ref, useMemo } from "react";
 import * as d3 from "d3";
 import { detectPeaks, DataPoint, PeakDetectionParams, validatePeakSelection, PeakData, PeakBand } from "@/utils/peakDetection";
-import { PencilSquareIcon, CheckIcon,TrashIcon } from '@heroicons/react/24/solid';
+import { PencilSquareIcon, CheckIcon, TrashIcon, PlusIcon } from '@heroicons/react/24/solid';
 import { ChartPeak, ChangeAreaItem } from "@/types/peakApi";
 
 // API-based peak type for the chart
@@ -13,7 +13,31 @@ export interface ApiPeakForChart {
   area: number;
 }
 
-// Info about a peak area change for API call
+// Edit types for peak integration API
+export type EditPeakType = 'update' | 'add' | 'delete';
+
+// Info about a peak integration edit for API call
+export interface EditPeakIntegrationInfo {
+  editType: EditPeakType;
+  bandKey: string;
+  channelName: string;
+  peakIndex: number;  // For delete: peak_x to delete. For update/add: peak index or x position
+  newStart?: number;  // Required for 'add' and 'update'
+  newEnd?: number;    // Required for 'add' and 'update'
+}
+
+// Batch add info - for adding multiple peaks at once
+export interface BatchAddPeaksInfo {
+  bandKey: string;
+  channelName: string;
+  newPeaks: Array<{
+    peakX: number;
+    newStart: number;
+    newEnd: number;
+  }>;
+}
+
+// Legacy interface for backward compatibility
 export interface PeakAreaChangeInfo {
   bandKey: string;
   channelName: string;
@@ -30,8 +54,20 @@ interface D3InteractiveChartProps {
   bandstep?: number;
   onPeaksChange?: (peaks: DataPoint[]) => void;
 onRegionsChange?: (regions: { x0: number; x1: number; area?: number; channel?: string }[]) => void;
-  // Callback when user confirms peak area edit (tick button clicked)
+  // Callback when user confirms peak area edit (tick button clicked) - legacy
   onPeakAreaChange?: (changeInfo: PeakAreaChangeInfo) => void;
+  // New callback for edit_peak_integration API (update, add, delete)
+  onEditPeakIntegration?: (editInfo: EditPeakIntegrationInfo) => void;
+  // Callback for batch adding multiple peaks at once
+  onBatchAddPeaks?: (batchInfo: BatchAddPeaksInfo) => void;
+  // Callback when a new region is added in add mode (for cross-channel tracking)
+  onNewRegionAdded?: (region: { x0: number; x1: number; peakX: number; channelName: string }) => void;
+  // Callback when user clicks/selects a peak - immediately notifies parent
+  onPeakSelect?: (peak: DataPoint, channelName: string) => void;
+  // External control for add peak mode (lifted state from parent)
+  addPeakModeExternal?: boolean;
+  // Callback when add peak mode toggle is clicked
+  onAddPeakModeToggle?: (isAddMode: boolean) => void;
 
   selectedPeakRef?: React.MutableRefObject<{ [channelName: string]: DataPoint[] }>;
   channelName?: string;
@@ -55,6 +91,12 @@ const D3InteractiveChart = forwardRef(function D3InteractiveChart(
     onPeaksChange,
     onRegionsChange,
     onPeakAreaChange,
+    onEditPeakIntegration,
+    onBatchAddPeaks,
+    onNewRegionAdded,
+    onPeakSelect,
+    addPeakModeExternal,
+    onAddPeakModeToggle,
     bandstep,
     channelName,
     selectedPeakRef,
@@ -67,6 +109,15 @@ const D3InteractiveChart = forwardRef(function D3InteractiveChart(
 ) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [editPeak, setEditPeak] = useState(false);
+  // Use external add peak mode if provided, otherwise use local state
+  const [addPeakModeLocal, setAddPeakModeLocal] = useState(false);
+  const addPeakMode = addPeakModeExternal !== undefined ? addPeakModeExternal : addPeakModeLocal;
+  // Track newly added regions during add mode (for 'add' operations) - local only
+  const [newlyAddedRegions, setNewlyAddedRegions] = useState<
+    { x0: number; x1: number; peakX: number }[]
+  >([]);
+  // Ref to track newly added regions (avoids closure issues in D3 callbacks)
+  const newlyAddedRegionsRef = useRef<{ x0: number; x1: number; peakX: number }[]>([]);
   // Track original region states when editing starts (all regions)
   const [editingRegionsOriginal, setEditingRegionsOriginal] = useState<
     { x0: number; x1: number; peakX: number }[] | null
@@ -175,8 +226,12 @@ useEffect(() => {
     .attr("transform", `translate(${margin.left},${margin.top})`);
 
   // --- X scale ---
+  // Fixed domain from 0 to 100 to always show full hRF range
+  const xDataExtent = d3.extent(preprocessedData, d => d.x) as [number, number];
+  const xMin = 0;
+  const xMax = 100; // Fixed to 100 for full hRF range visibility
   const x = d3.scaleLinear()
-    .domain(d3.extent(preprocessedData, d => d.x) as [number, number])
+    .domain([xMin, xMax])
     .range([0, width]);
 
   // --- Y scale (dynamic, supports negatives) ---
@@ -248,10 +303,13 @@ useEffect(() => {
   if (svg.select(".brush").empty()) g.append("g").attr("class", "brush");
 
   // --- Zoom (x-only) ---
+  // Use full SVG dimensions (including margins) for translateExtent
+  const svgWidth = width + margin.left + margin.right;
+  const svgHeight = height + margin.top + margin.bottom;
   svg.call(
     d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([1, 10])
-      .translateExtent([[0, 0], [width, height]])
+      .translateExtent([[0, 0], [svgWidth, svgHeight]])
       .on("zoom", (event) => {
         zoomTransform.current = event.transform;
 
@@ -317,17 +375,26 @@ useEffect(() => {
     }
   }, [detectedPeaks, preprocessedData, regions.length, peakParams, defaultParams, peaks, useApiPeaks, apiPeaks, apiPeaksAsDataPoints, channelName]);
 
-  // Reset peaksState when API peaks change - API only mode
+  // Reset peaksState and regions when API peaks change - API only mode
+  // This ensures the chart updates immediately when the peak-integration API responds
   useEffect(() => {
     if (apiPeaks && apiPeaks.length > 0) {
       setPeaksState(apiPeaksAsDataPoints);
+      
+      // Sync regions with updated API peaks
+      const newRegions = apiPeaks
+        .map(peak => ({
+          x0: peak.startX,
+          x1: peak.endX,
+          area: peak.area,
+          channel: channelName ?? "unknown",
+        }))
+        .filter((r) => r.x0 !== undefined && r.x1 !== undefined);
+      
+      console.log(`[D3Chart] Syncing ${newRegions.length} regions from API for ${channelName}`);
+      setRegions(newRegions);
     }
-    // COMMENTED OUT: Fallback - using API only
-    // else {
-    //   setPeaksState(detectedPeaks);
-    // }
-    // Do not clear regions here to avoid wiping user selections unnecessarily
-  }, [apiPeaks, apiPeaksAsDataPoints]);
+  }, [apiPeaks, apiPeaksAsDataPoints, channelName]);
 
 
   useEffect(() => {
@@ -469,6 +536,10 @@ useEffect(() => {
           event.stopPropagation();
           setSelectedPeakIdx(idx);
           setSelectedPeak(peak);
+          // Notify parent immediately when peak is selected
+          if (onPeakSelect && channelName) {
+            onPeakSelect(peak, channelName);
+          }
         });
   
       highlightedAreasGroup.append("circle")
@@ -483,47 +554,69 @@ useEffect(() => {
           event.stopPropagation();
           setSelectedPeakIdx(idx);
           setSelectedPeak(peak);
+          // Notify parent immediately when peak is selected
+          if (onPeakSelect && channelName) {
+            onPeakSelect(peak, channelName);
+          }
         });
     });
   
     // Deselect on background click
     svg.on("click", () => setSelectedRegionIdx(null));
   
-    // 🖌️ Brush (only when not editing)
+    // 🖌️ Brush (works in addPeakMode only, not in editPeak mode)
     brushGroup.selectAll("*").remove();
-    if (!editPeak) {
-      const brush = d3.brushX()
-        .extent([[0, 0], [width, height]])
-        .on("end", (event) => {
-          const selection = event.selection;
-          if (!selection) return;
-  
-          const [x0, x1] = selection.map(newX.invert);
-          const regionData = preprocessedData.filter(d => d.x >= x0 && d.x <= x1);
-          if (regionData.length === 0) return;
-  
-          const maxPoint = regionData.reduce((a, b) => (a.y > b.y ? a : b));
-          setPeaksState(peaks => [...peaks, maxPoint]);
-          setRegions(regions => [...regions, { x0, x1 }]);
-  
-          // OPTIONAL: update selectedPeakRef here
-          if (channelName && selectedPeakRef?.current) {
-            Object.keys(selectedPeakRef.current).forEach(ch => {
-              if (!Array.isArray(selectedPeakRef.current[ch])) {
-                selectedPeakRef.current[ch] = [];
-              }
-              selectedPeakRef.current[ch].push({
-                ...maxPoint,
-                channel: ch,
-                track: bandstep,
-              });
+    // Brush only works in add peak mode (not in edit mode or normal mode)
+    if (!addPeakMode || editPeak) return;
+    
+    const brush = d3.brushX()
+      .extent([[0, 0], [width, height]])
+      .on("end", (event) => {
+        const selection = event.selection;
+        if (!selection) return;
+
+        const [x0, x1] = selection.map(newX.invert);
+        const regionData = preprocessedData.filter(d => d.x >= x0 && d.x <= x1);
+        if (regionData.length === 0) return;
+
+        const maxPoint = regionData.reduce((a, b) => (a.y > b.y ? a : b));
+        setPeaksState(peaks => [...peaks, maxPoint]);
+        setRegions(regions => [...regions, { x0, x1 }]);
+        
+        // Track newly added region for API call using ref to preserve across closures
+        const newRegion = { x0, x1, peakX: maxPoint.x };
+        newlyAddedRegionsRef.current = [...newlyAddedRegionsRef.current, newRegion];
+        setNewlyAddedRegions([...newlyAddedRegionsRef.current]);
+        console.log(`[D3Chart] New region added in add mode: [${x0}, ${x1}], peak: ${maxPoint.x}, total: ${newlyAddedRegionsRef.current.length}`);
+
+        // Notify parent about the new region (for cross-channel tracking)
+        if (onNewRegionAdded && channelName) {
+          onNewRegionAdded({
+            x0,
+            x1,
+            peakX: maxPoint.x,
+            channelName: channelName,
+          });
+        }
+
+        // OPTIONAL: update selectedPeakRef here
+        if (channelName && selectedPeakRef?.current) {
+          Object.keys(selectedPeakRef.current).forEach(ch => {
+            if (!Array.isArray(selectedPeakRef.current[ch])) {
+              selectedPeakRef.current[ch] = [];
+            }
+            selectedPeakRef.current[ch].push({
+              ...maxPoint,
+              channel: ch,
+              track: bandstep,
             });
-          }
-  
-          brushGroup.call(brush.move, null); // clear brush
-        });
-  
-      brushGroup.call(brush);
+          });
+        }
+
+        brushGroup.call(brush.move, null); // clear brush
+      });
+
+    brushGroup.call(brush);
 
 //       // ✅ Notify parent about all regions with their areas
 // if (onRegionsChange) {
@@ -536,9 +629,8 @@ useEffect(() => {
 
 // ✅ Optionally, sync to selectedPeakRef (like peaks
 
-    }
   
-  }, [editPeak, preprocessedData, regions, selectedRegionIdx, selectedPeakIdx, channelName, peaks, allPeaks, selectedPeakRef, bandstep]);
+  }, [editPeak, addPeakMode, preprocessedData, regions, selectedRegionIdx, selectedPeakIdx, channelName, peaks, allPeaks, selectedPeakRef, bandstep, onPeakSelect, onNewRegionAdded]);
   
   // Compute areas for regions whenever regions change (boundaries only, not area itself)
   useEffect(() => {
@@ -624,7 +716,9 @@ useEffect(() => {
 
   return (
     <div>
-      <button onClick={() => {
+      <button 
+        disabled={addPeakMode} // Disable when in add peak mode
+        onClick={() => {
         setEditPeak(e => {
           const next = !e;
           
@@ -646,35 +740,33 @@ useEffect(() => {
             console.log('[D3Chart] Original regions:', editingRegionsOriginal);
             console.log('[D3Chart] Current regions:', regions);
             
-            if (editingRegionsOriginal && onPeakAreaChange && bandstep !== undefined && channelName) {
-              regions.forEach((currentRegion, idx) => {
-                const original = editingRegionsOriginal[idx];
-                if (!original) return;
-                
-                const hasChanged = 
-                  Math.round(currentRegion.x0) !== Math.round(original.x0) || 
-                  Math.round(currentRegion.x1) !== Math.round(original.x1);
-                
-                if (hasChanged) {
-                  console.log(`[D3Chart] Region ${idx} changed: [${original.x0}, ${original.x1}] -> [${currentRegion.x0}, ${currentRegion.x1}]`);
+            if (bandstep !== undefined && channelName) {
+              // Handle UPDATE operations for existing regions that changed
+              if (editingRegionsOriginal && onEditPeakIntegration) {
+                regions.forEach((currentRegion, idx) => {
+                  const original = editingRegionsOriginal[idx];
+                  if (!original) return;
                   
-                  // Find the peak index based on position in apiPeaks
-                  const peakIndex = apiPeaks?.findIndex(p => 
-                    Math.abs(p.x - original.peakX) < 1
-                  ) ?? idx;
+                  const hasChanged = 
+                    Math.round(currentRegion.x0) !== Math.round(original.x0) || 
+                    Math.round(currentRegion.x1) !== Math.round(original.x1);
                   
-                  // Pass the peak's x-value as peakIndex (API expects peak_x here)
-                  onPeakAreaChange({
-                    bandKey: String(bandstep),
-                    channelName: channelName,
-                    peakIndex: original.peakX,
-                    peakX: original.peakX,
-                    newStart: Math.round(currentRegion.x0),
-                    newEnd: Math.round(currentRegion.x1),
-                  });
-                }
-              });
+                  if (hasChanged) {
+                    console.log(`[D3Chart] Region ${idx} UPDATE: [${original.x0}, ${original.x1}] -> [${currentRegion.x0}, ${currentRegion.x1}]`);
+                    
+                    onEditPeakIntegration({
+                      editType: 'update',
+                      bandKey: String(bandstep),
+                      channelName: channelName,
+                      peakIndex: original.peakX,
+                      newStart: Math.round(currentRegion.x0),
+                      newEnd: Math.round(currentRegion.x1),
+                    });
+                  }
+                });
+              }
             }
+            
             // Clear the editing state
             setEditingRegionsOriginal(null);
           }
@@ -696,9 +788,107 @@ useEffect(() => {
     </>
   )}
       </button>
+      
+      {/* Add Peak Button - enables brush mode to add new peaks */}
+      <button
+        disabled={editPeak} // Disable when in edit mode
+        style={{ marginLeft: 8 }}
+        onClick={() => {
+          const currentMode = addPeakMode;
+          const nextMode = !currentMode;
+          
+          if (nextMode) {
+            // Entering add peak mode - clear any previous newly added regions (local only)
+            newlyAddedRegionsRef.current = [];
+            setNewlyAddedRegions([]);
+            console.log('[D3Chart] Entering add peak mode');
+          } else {
+            // Exiting add peak mode
+            // If using external state, parent handles the batch send
+            // If using local state, send from this component
+            if (addPeakModeExternal === undefined) {
+              // Local mode - send all newly added regions to API in one batch request
+              const regionsToSend = newlyAddedRegionsRef.current;
+              console.log('[D3Chart] Exiting add peak mode (local), sending new regions:', regionsToSend);
+              
+              if (regionsToSend.length > 0 && onBatchAddPeaks && bandstep !== undefined && channelName) {
+                const newPeaksData = regionsToSend.map(region => ({
+                  peakX: region.peakX,
+                  newStart: Math.round(region.x0),
+                  newEnd: Math.round(region.x1),
+                }));
+                
+                console.log('[D3Chart] Batch ADD peaks:', newPeaksData);
+                
+                onBatchAddPeaks({
+                  bandKey: String(bandstep),
+                  channelName: channelName,
+                  newPeaks: newPeaksData,
+                });
+              }
+            }
+            
+            // Clear local newly added regions
+            newlyAddedRegionsRef.current = [];
+            setNewlyAddedRegions([]);
+          }
+          
+          // Toggle mode - use external callback if provided, otherwise local state
+          if (onAddPeakModeToggle) {
+            onAddPeakModeToggle(nextMode);
+          } else {
+            setAddPeakModeLocal(nextMode);
+          }
+        }}
+      >
+        {addPeakMode ? (
+          <>
+            <CheckIcon className="w-5 h-5 text-green-600" />
+            {/* <span>Confirm Add Peaks</span> */}
+          </>
+        ) : (
+          <>
+            <PlusIcon className="w-5 h-5 text-green-600" />
+            {/* <span>Add Peak</span> */}
+          </>
+        )}
+      </button>
+      
       <button
         onClick={() => {
-          if (selectedRegionIdx !== null) {
+          if (selectedPeakIdx !== null && editPeak) {
+            // DELETE operation - delete selected peak
+            const peakToDelete = peaks[selectedPeakIdx];
+            if (peakToDelete && onEditPeakIntegration && bandstep !== undefined && channelName) {
+              console.log(`[D3Chart] Peak DELETE: x=${peakToDelete.x}`);
+              
+              onEditPeakIntegration({
+                editType: 'delete',
+                bandKey: String(bandstep),
+                channelName: channelName,
+                peakIndex: peakToDelete.x, // Pass peak_x for delete
+              });
+            }
+            
+            // Also remove from local state
+            setRegions(regions => {
+              const regionToDelete = regions.find(r => 
+                peakToDelete.x >= r.x0 && peakToDelete.x <= r.x1
+              );
+              if (regionToDelete) {
+                setPeaksState(peaks =>
+                  peaks.filter(
+                    peak => !(peak.x >= regionToDelete.x0 && peak.x <= regionToDelete.x1)
+                  )
+                );
+                return regions.filter(r => r !== regionToDelete);
+              }
+              return regions;
+            });
+            setSelectedPeakIdx(null);
+            setSelectedPeak(null);
+          } else if (selectedRegionIdx !== null) {
+            // Legacy: delete by region selection
             setRegions(regions => {
               const regionToDelete = regions[selectedRegionIdx];
               // Remove peaks whose x is inside the deleted region
@@ -712,14 +902,16 @@ useEffect(() => {
             setSelectedRegionIdx(null);
           }
         }}
-        disabled={selectedRegionIdx === null}
+        disabled={!editPeak || (selectedPeakIdx === null && selectedRegionIdx === null)}
         style={{ marginLeft: 8 }}
       >
        {editPeak ? <TrashIcon className="w-5 h-5 text-red-600" /> : null}
-        {/* <span>Delete Selected Region</span> */}
+        {/* <span>Delete Selected Peak</span> */}
       </button>
      
-      <svg ref={svgRef} width={600} height={400}></svg>
+      <div style={{ width: '100%', maxWidth: 800, overflowX: 'auto', overflowY: 'hidden' }}>
+        <svg ref={svgRef} width={800} height={400} style={{ display: 'block' }}></svg>
+      </div>
       {/* Optionally show selected peak info */}
       {selectedPeak && (
         <div style={{ marginTop: 8 }}>

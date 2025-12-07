@@ -471,14 +471,15 @@ def Processed_densitogram(request):
     except Exception as e:
         return JsonResponse({"error": str(e), "preprocess_option": preprocess_order}, status=500)
     
-
 @api_view(['POST'])
 def peak_integration(request):
     input_data = request.data
     data = input_data.get("processed_data", {})
     params = input_data.get("params", {})
 
-    # Retrieve peak parameters
+    # ------------------------
+    # 1. Peak detection params
+    # ------------------------
     min_peak_height = params.get("min_peak_height", None)
     peak_threshold = params.get("peak_threshold", None)
     distance_bw_peaks = params.get("distance_bw_peaks", None)
@@ -489,16 +490,23 @@ def peak_integration(request):
     peak_plateau_size = params.get("peak_plateau_size", None)
     peak_Min_peak_area = params.get("peak_Min_peak_area", None)
     find_area = params.get("find_area", True)
-    change_area_list = params.get("change_area", [])  # Optional list of changes
+
+    # ------------------------
+    # 2. Peak edits list
+    # ------------------------
+    edit_peak_integration = params.get("edit_peak_integration", [])
 
     band_dict = {}
 
-    # First, compute peaks normally
+    # ------------------------
+    # 3. Automatic peak detection
+    # ------------------------
     for band_key, band in data.items():
         band_dict[band_key] = {}
         for channel_name, channel_data in band.items():
             if channel_name not in ["red", "green", "blue", "grayscale"]:
                 continue
+
             band_peaks = get_peaks_and_area(
                 channel_data,
                 height=min_peak_height,
@@ -512,28 +520,105 @@ def peak_integration(request):
                 Min_peak_area=peak_Min_peak_area,
                 find_area=find_area
             )
-            band_dict[band_key][channel_name] = band_peaks
 
-    # Apply change_area updates if provided
-    for change in change_area_list:
-        band_key = change.get("band_key")
-        channel_name = change.get("channel_name")
-        peak_index = change.get("peak_index")
-        new_start = change.get("new_start")
-        new_end = change.get("new_end")
+            # Convert keys to peak_x for consistency
+            band_dict[band_key][channel_name] = {
+                v["peak_x"]: v for k, v in band_peaks.items()
+            }
 
-        if not all([band_key, channel_name, peak_index]):
-            continue  # skip incomplete entries
+    # ------------------------
+    # 4. Apply manual edits
+    # ------------------------
+    for edit in edit_peak_integration:
+        band_key = edit.get("band_key")
+        channel_name = edit.get("channel_name")
+        edit_type = edit.get("edit_type", "update").lower()  # "add", "update", "delete"
+        new_start = edit.get("new_start")
+        new_end = edit.get("new_end")
+        manual_peak_height = edit.get("peak_height", None)
+        manual_peak_x = edit.get("peak_x", None)
 
-        # Check if the peak exists
-        if band_key in band_dict and channel_name in band_dict[band_key]:
-            if peak_index in band_dict[band_key][channel_name]:
-                # Update area
-                t = np.arange(len(data[band_key][channel_name]))
-                x = np.array(data[band_key][channel_name])
-                area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
-                band_dict[band_key][channel_name][peak_index]["start_end"] = (int(new_start), int(new_end))
-                band_dict[band_key][channel_name][peak_index]["area"] = area_val
+        # Validate band and channel
+        if band_key is None or channel_name is None:
+            continue
+        if band_key not in data or channel_name not in data[band_key]:
+            continue
+
+        # Initialize channel dict if missing
+        if band_key not in band_dict:
+            band_dict[band_key] = {}
+        if channel_name not in band_dict[band_key]:
+            band_dict[band_key][channel_name] = {}
+
+        x = np.array(data[band_key][channel_name])
+        t = np.arange(len(x))
+
+        # For add/update, need bounds
+        if edit_type in ["add", "update"] and (new_start is None or new_end is None):
+            continue
+
+        # ------------------------
+        # Compute peak_x for add or if not provided
+        # ------------------------
+        if edit_type == "add":
+            manual_peak_x = int(new_start + np.argmax(x[new_start:new_end]))
+        elif manual_peak_x is None:
+            # For update, user must provide peak_x
+            continue
+
+        dict_key = manual_peak_x  # Use peak_x as dictionary key
+
+        # ------------------------
+        # DELETE
+        # ------------------------
+        if edit_type == "delete":
+            # deletion will be applied later in final filtering
+            continue
+
+        # ------------------------
+        # Compute area and peak height if not provided
+        # ------------------------
+        area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
+        if manual_peak_height is None:
+            manual_peak_height = float(x[new_start:new_end].max())
+
+        # ------------------------
+        # UPDATE
+        # ------------------------
+        if edit_type == "update":
+            if dict_key in band_dict[band_key][channel_name]:
+                band_dict[band_key][channel_name][dict_key] = {
+                    "peak_height": float(manual_peak_height),
+                    "peak_x": int(manual_peak_x),
+                    "start_end": (int(new_start), int(new_end)),
+                    "area": area_val
+                }
+            else:
+                # Treat as add if peak does not exist
+                edit_type = "add"
+
+        # ------------------------
+        # ADD
+        # ------------------------
+        if edit_type == "add":
+            band_dict[band_key][channel_name][dict_key] = {
+                "peak_height": float(manual_peak_height),
+                "peak_x": int(manual_peak_x),
+                "start_end": (int(new_start), int(new_end)),
+                "area": area_val
+            }
+
+    # ------------------------
+    # 5. Final filtering to remove deleted peaks
+    # ------------------------
+    for edit in edit_peak_integration:
+        if edit.get("edit_type", "").lower() == "delete":
+            band_key = edit.get("band_key")
+            channel_name = edit.get("channel_name")
+            peak_x = edit.get("peak_x")
+            if band_key and channel_name and peak_x is not None:
+                if band_key in band_dict and channel_name in band_dict[band_key]:
+                    band_dict[band_key][channel_name].pop(peak_x, None)
 
     return JsonResponse(band_dict)
 

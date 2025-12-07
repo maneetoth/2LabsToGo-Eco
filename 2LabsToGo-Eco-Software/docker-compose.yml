@@ -49,9 +49,15 @@ services:
     # ports:
     #   - "3000:3000"
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend/dashboard:/dashboard
+      - /dashboard/node_modules
+      - /dashboard/.next
     depends_on:
       - app
+    command: npm run dev
 
 
 

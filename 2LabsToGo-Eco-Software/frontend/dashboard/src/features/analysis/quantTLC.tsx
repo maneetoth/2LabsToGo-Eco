@@ -5,7 +5,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import IndividualLineChart from "@/components/charts/IndividualLineChart";
-import D3InteractiveChart, { D3InteractiveChartHandle, PeakAreaChangeInfo } from "@/components/charts/peak-linechart";
+import D3InteractiveChart, { D3InteractiveChartHandle, PeakAreaChangeInfo, EditPeakIntegrationInfo, BatchAddPeaksInfo } from "@/components/charts/peak-linechart";
 import * as d3 from "d3";
 import ImageCropper from "@/components/Image/ImageCropper";
 import { useDispatch, useSelector } from 'react-redux'
@@ -144,6 +144,40 @@ const [apiPeakParams, setApiPeakParams] = useState<PeakDetectionApiParams>({
 });
 const [apiPeaksResponse, setApiPeaksResponse] = useState<PeakDetectionApiResponse | null>(null);
 const [apiPeaksLoading, setApiPeaksLoading] = useState(false);
+
+// Helper function to merge new API response with existing state
+// This preserves data from channels that were not modified
+const mergeApiPeaksResponse = useCallback((newResponse: PeakDetectionApiResponse) => {
+  setApiPeaksResponse(prevResponse => {
+    if (!prevResponse) {
+      // No previous response, use the new one as-is
+      return newResponse;
+    }
+    
+    // Deep merge: preserve existing tracks/channels, update with new data
+    const merged: PeakDetectionApiResponse = { ...prevResponse };
+    
+    for (const trackKey of Object.keys(newResponse)) {
+      if (!merged[trackKey]) {
+        // New track, add it
+        merged[trackKey] = newResponse[trackKey];
+      } else {
+        // Existing track, merge channels
+        merged[trackKey] = { ...merged[trackKey] };
+        const newTrack = newResponse[trackKey];
+        
+        for (const channelKey of Object.keys(newTrack) as Array<keyof typeof newTrack>) {
+          // Update/replace channel data from new response
+          merged[trackKey][channelKey] = newTrack[channelKey];
+        }
+      }
+    }
+    
+    console.log('[quantTLC] Merged API response:', merged);
+    return merged;
+  });
+}, []);
+
 // Transformed peaks ready for chart consumption
 const apiChartPeaks = useMemo<AllTracksChartPeaks>(() => {
   if (!apiPeaksResponse) return {};
@@ -425,6 +459,18 @@ const handleProcessedData = (processeddata: { [channel: string]: DataPoint[] }) 
   allPeaksRef.current = allPeaks;
 };
 
+// Handler for when a peak is selected in the chart - updates selectedPeak state immediately
+const handlePeakSelect = useCallback((peak: DataPoint, channelName: string) => {
+  console.log('[handlePeakSelect] Peak selected:', peak, 'Channel:', channelName);
+  const newSelectedPeak = {
+    channel: channelName as ChannelName,
+    band: bandStep,
+    peak: peak,
+  };
+  setSelectedPeak(newSelectedPeak);
+  console.log('[handlePeakSelect] Updated selectedPeak state:', newSelectedPeak);
+}, [bandStep]);
+
 const handleRegionsChange = useCallback((newRegions: RegionWithArea[]) => {
   if (!newRegions || newRegions.length === 0) return;
   const ch = newRegions[0].channel || 'unknown';
@@ -678,7 +724,7 @@ const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) 
     );
 
     console.log('Peak Area Change API Response:', response.data);
-    setApiPeaksResponse(response.data);
+    mergeApiPeaksResponse(response.data);
     notify('success', 'Peak area updated successfully.');
   } catch (err) {
     console.error('Peak Area Change API error:', err);
@@ -687,7 +733,189 @@ const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) 
   } finally {
     setApiPeaksLoading(false);
   }
-}, [preprocessedData, apiPeakParams, notify]);
+}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse]);
+
+// Handler for edit_peak_integration API (update, add, delete operations)
+const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrationInfo) => {
+  if (!preprocessedData) {
+    console.warn('No preprocessed data available for peak integration edit');
+    return;
+  }
+
+  console.log('Edit peak integration:', editInfo);
+
+  // Build the edit_peak_integration item for API
+  const editItem: Record<string, any> = {
+    edit_type: editInfo.editType,
+    band_key: editInfo.bandKey,
+    channel_name: editInfo.channelName,
+    peak_x: editInfo.peakIndex,
+  };
+
+  // Add new_start and new_end only for 'add' and 'update' operations
+  if (editInfo.editType === 'add' || editInfo.editType === 'update') {
+    editItem.new_start = editInfo.newStart;
+    editItem.new_end = editInfo.newEnd;
+  }
+
+  setApiPeaksLoading(true);
+  try {
+    const requestBody = {
+      params: {
+        ...apiPeakParams,
+        edit_peak_integration: [editItem],
+      },
+      processed_data: preprocessedData,
+    };
+
+    console.log('Sending edit_peak_integration request:', requestBody);
+
+    const response = await axios.post<PeakDetectionApiResponse>(
+      'http://localhost/peak_integration/',
+      requestBody,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+    );
+
+    console.log('Edit Peak Integration API Response:', response.data);
+    mergeApiPeaksResponse(response.data);
+    
+    const actionLabel = editInfo.editType === 'add' ? 'added' : 
+                        editInfo.editType === 'delete' ? 'deleted' : 'updated';
+    notify('success', `Peak ${actionLabel} successfully.`);
+  } catch (err) {
+    console.error('Edit Peak Integration API error:', err);
+    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
+    notify('error', `Peak ${editInfo.editType} failed${msg ? `: ${msg}` : ''}`);
+  } finally {
+    setApiPeaksLoading(false);
+  }
+}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse]);
+
+// Handler for batch adding multiple peaks at once
+const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => {
+  if (!preprocessedData) {
+    console.warn('No preprocessed data available for batch add peaks');
+    return;
+  }
+
+  if (batchInfo.newPeaks.length === 0) {
+    console.warn('No new peaks to add');
+    return;
+  }
+
+  console.log('Batch add peaks:', batchInfo);
+
+  // Build array of edit_peak_integration items for all new peaks
+  const editItems = batchInfo.newPeaks.map(peak => ({
+    edit_type: 'add',
+    band_key: batchInfo.bandKey,
+    channel_name: batchInfo.channelName,
+    peak_index: peak.peakX,
+    new_start: peak.newStart,
+    new_end: peak.newEnd,
+  }));
+
+  setApiPeaksLoading(true);
+  try {
+    const requestBody = {
+      params: {
+        ...apiPeakParams,
+        edit_peak_integration: editItems, // Send all new peaks in one request
+      },
+      processed_data: preprocessedData,
+    };
+
+    console.log('Sending batch add peaks request:', requestBody);
+
+    const response = await axios.post<PeakDetectionApiResponse>(
+      'http://localhost/peak_integration/',
+      requestBody,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+    );
+
+    console.log('Batch Add Peaks API Response:', response.data);
+    mergeApiPeaksResponse(response.data);
+    
+    notify('success', `${batchInfo.newPeaks.length} peak(s) added successfully.`);
+  } catch (err) {
+    console.error('Batch Add Peaks API error:', err);
+    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
+    notify('error', `Adding peaks failed${msg ? `: ${msg}` : ''}`);
+  } finally {
+    setApiPeaksLoading(false);
+  }
+}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse]);
+
+// Cross-channel add peak mode state
+const [globalAddPeakMode, setGlobalAddPeakMode] = useState(false);
+// Track all newly added regions across all channels
+const allNewRegionsRef = useRef<{ x0: number; x1: number; peakX: number; channelName: string }[]>([]);
+
+// Handler for when a new region is added in any channel
+const handleNewRegionAdded = useCallback((region: { x0: number; x1: number; peakX: number; channelName: string }) => {
+  allNewRegionsRef.current = [...allNewRegionsRef.current, region];
+  console.log('[quantTLC] New region added across channels:', region, 'Total:', allNewRegionsRef.current.length);
+}, []);
+
+// Handler for add peak mode toggle - syncs across all channels
+const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
+  if (isAddMode) {
+    // Entering add mode - clear previous regions
+    allNewRegionsRef.current = [];
+    console.log('[quantTLC] Entering global add peak mode');
+  } else {
+    // Exiting add mode - send all regions from all channels
+    const allRegions = allNewRegionsRef.current;
+    console.log('[quantTLC] Exiting global add peak mode, all regions:', allRegions);
+    
+    if (allRegions.length > 0 && preprocessedData && bandStep !== undefined) {
+      // Group regions by channel
+      const editItems = allRegions.map(region => ({
+        edit_type: 'add',
+        band_key: String(bandStep),
+        channel_name: region.channelName,
+        peak_index: region.peakX,
+        new_start: Math.round(region.x0),
+        new_end: Math.round(region.x1),
+      }));
+      
+      setApiPeaksLoading(true);
+      try {
+        const requestBody = {
+          params: {
+            ...apiPeakParams,
+            edit_peak_integration: editItems, // Send all new peaks from all channels
+          },
+          processed_data: preprocessedData,
+        };
+
+        console.log('[quantTLC] Sending cross-channel batch add peaks request:', requestBody);
+
+        const response = await axios.post<PeakDetectionApiResponse>(
+          'http://localhost/peak_integration/',
+          requestBody,
+          { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+        );
+
+        console.log('[quantTLC] Cross-channel Batch Add Peaks API Response:', response.data);
+        mergeApiPeaksResponse(response.data);
+        
+        notify('success', `${allRegions.length} peak(s) added across channels successfully.`);
+      } catch (err) {
+        console.error('[quantTLC] Cross-channel Batch Add Peaks API error:', err);
+        const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
+        notify('error', `Adding peaks failed${msg ? `: ${msg}` : ''}`);
+      } finally {
+        setApiPeaksLoading(false);
+      }
+    }
+    
+    // Clear all regions after sending
+    allNewRegionsRef.current = [];
+  }
+  
+  setGlobalAddPeakMode(isAddMode);
+}, [preprocessedData, bandStep, apiPeakParams, notify, mergeApiPeaksResponse]);
 
 // Automatically fetch peaks when preprocessed data changes
 useEffect(() => {
@@ -1931,49 +2159,7 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
   {step === 2 && (
     <div className="w-full max-w-8xl mx-auto px-4">
-        <h2 className="text-xl font-semibold text-center mb-6">Integration & Stats</h2>
-
-        {/* Number of Tracks Input */}
-       <div className="mt-4 flex flex-col items-center justify-center gap-2">
-  {/* Step Number */}
-  <p className="text-sm text-gray-600">
-    Track {bandStep} of {totalTracks}
-  </p>
-
-  {/* Navigation and Image */}
-  <div className="flex items-center justify-center gap-4">
-    {/* Left Arrow */}
-    <button
-      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
-      onClick={() => {
-        if (bandStep > 1) setBandStep(bandStep - 1);
-      }}
-      disabled={bandStep <= 1}
-    >
-      <ArrowLeftIcon className="h-6 w-6 text-gray-600" />
-    </button>
-
-    {/* Image */}
-    {data && (
-      <img
-        src={imgSrc}
-        alt="Quant TLC Image"
-        className="w-full max-w-lg rounded-lg shadow-lg"
-      />
-    )}
-
-    {/* Right Arrow */}
-    <button
-      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
-      onClick={() => {
-        if (bandStep < totalTracks) setBandStep(bandStep + 1);
-      }}
-      disabled={bandStep >= totalTracks}
-    >
-      <ArrowRightIcon className="h-6 w-6 text-gray-600" />
-    </button>
-  </div>
-</div>
+       
 
 
 
@@ -2162,9 +2348,54 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
             </div>
         </div>
 
+         <h2 className="text-xl font-semibold text-center mb-6">Integration & Stats</h2>
+
+        {/* Number of Tracks Input */}
+       <div className="mt-4 flex flex-col items-center justify-center gap-2">
+  {/* Step Number */}
+  <p className="text-sm text-gray-600">
+    Track {bandStep} of {totalTracks}
+  </p>
+
+  {/* Navigation and Image */}
+  <div className="flex items-center justify-center gap-4">
+    {/* Left Arrow */}
+    <button
+      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
+      onClick={() => {
+        if (bandStep > 1) setBandStep(bandStep - 1);
+      }}
+      disabled={bandStep <= 1}
+    >
+      <ArrowLeftIcon className="h-6 w-6 text-gray-600" />
+    </button>
+
+    {/* Image */}
+    {data && (
+      <img
+        src={imgSrc}
+        alt="Quant TLC Image"
+        className="w-full max-w-lg rounded-lg shadow-lg"
+      />
+    )}
+
+    {/* Right Arrow */}
+    <button
+      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
+      onClick={() => {
+        if (bandStep < totalTracks) setBandStep(bandStep + 1);
+      }}
+      disabled={bandStep >= totalTracks}
+    >
+      <ArrowRightIcon className="h-6 w-6 text-gray-600" />
+    </button>
+  </div>
+</div>
+
         {/* Buttons for Automatic Integration & Peak List */}
-        <div className="flex justify-center space-x-4 mb-6">
+        <div className="flex justify-center space-x-4 mb-6 mt-6">
             {/* Select Standard Button */}
+            
             <button
                 className="btn btn-primary flex items-center ml-4"
                 onClick={openSelectStandardModal}
@@ -2414,6 +2645,12 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
               onPeakAreaChange={handlePeakAreaChange}
+              onEditPeakIntegration={handleEditPeakIntegration}
+              onBatchAddPeaks={handleBatchAddPeaks}
+              onNewRegionAdded={handleNewRegionAdded}
+              addPeakModeExternal={globalAddPeakMode}
+              onAddPeakModeToggle={handleAddPeakModeToggle}
+              onPeakSelect={handlePeakSelect}
               apiPeaks={currentTrackApiPeaks.red}
               useApiPeaks={!!apiPeaksResponse}
             />
@@ -2433,6 +2670,12 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
               onPeakAreaChange={handlePeakAreaChange}
+              onEditPeakIntegration={handleEditPeakIntegration}
+              onBatchAddPeaks={handleBatchAddPeaks}
+              onNewRegionAdded={handleNewRegionAdded}
+              addPeakModeExternal={globalAddPeakMode}
+              onAddPeakModeToggle={handleAddPeakModeToggle}
+              onPeakSelect={handlePeakSelect}
               apiPeaks={currentTrackApiPeaks.blue}
               useApiPeaks={!!apiPeaksResponse}
             />
@@ -2452,6 +2695,12 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
               onPeakAreaChange={handlePeakAreaChange}
+              onPeakSelect={handlePeakSelect}
+              onEditPeakIntegration={handleEditPeakIntegration}
+              onBatchAddPeaks={handleBatchAddPeaks}
+              onNewRegionAdded={handleNewRegionAdded}
+              addPeakModeExternal={globalAddPeakMode}
+              onAddPeakModeToggle={handleAddPeakModeToggle}
               apiPeaks={currentTrackApiPeaks.green}
               useApiPeaks={!!apiPeaksResponse}
             />
@@ -2471,6 +2720,12 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               allPeaks={allPeaksRef.current}
               onRegionsChange={handleRegionsChange}
               onPeakAreaChange={handlePeakAreaChange}
+              onPeakSelect={handlePeakSelect}
+              onEditPeakIntegration={handleEditPeakIntegration}
+              onBatchAddPeaks={handleBatchAddPeaks}
+              onNewRegionAdded={handleNewRegionAdded}
+              addPeakModeExternal={globalAddPeakMode}
+              onAddPeakModeToggle={handleAddPeakModeToggle}
               apiPeaks={currentTrackApiPeaks.grayscale}
               useApiPeaks={!!apiPeaksResponse}
             />
