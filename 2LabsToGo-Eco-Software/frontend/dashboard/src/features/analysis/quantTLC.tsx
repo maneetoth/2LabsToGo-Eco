@@ -144,6 +144,8 @@ const [apiPeakParams, setApiPeakParams] = useState<PeakDetectionApiParams>({
 });
 const [apiPeaksResponse, setApiPeaksResponse] = useState<PeakDetectionApiResponse | null>(null);
 const [apiPeaksLoading, setApiPeaksLoading] = useState(false);
+const [preprocessLoading, setPreprocessLoading] = useState(false);
+const [calibrationLoading, setCalibrationLoading] = useState(false);
 
 // Helper function to merge new API response with existing state
 // This preserves data from channels that were not modified
@@ -223,16 +225,27 @@ const [advancedOptions, setAdvancedOptions] = useState({
   },
 });
 
-  const [formData, setFormData] = useState({
-        real_width_mm: parseFloat(searchParams.get("real_width_mm") || "200.0"),
-        real_height_mm: parseFloat(searchParams.get("real_height_mm") || "100.0"),
-        crop_bottom_mm: parseFloat(searchParams.get("crop_bottom_mm") || "8.0"),
-        crop_top_mm: parseFloat(searchParams.get("crop_top_mm") || "60.0"),
-        first_band_mm: parseFloat(searchParams.get("first_band_mm") || "16.0"),
-        band_spacing_mm: parseFloat(searchParams.get("band_spacing_mm") || "10.5"),
-        num_bands: parseFloat(searchParams.get("num_bands") || "17.0"),
-        // dynamically computed; always kept as positive float
-        estimated_band_width_mm: parseFloat(searchParams.get("estimated_band_width_mm") || "0.0"),
+  type QuantFormData = {
+    real_width_mm: string;
+    real_height_mm: string;
+    crop_bottom_mm: string;
+    crop_top_mm: string;
+    first_band_mm: string;
+    band_spacing_mm: string;
+    num_bands: string;
+    estimated_band_width_mm: string;
+  };
+
+  const [formData, setFormData] = useState<QuantFormData>({
+        real_width_mm: searchParams.get("real_width_mm") || "200.0",
+        real_height_mm: searchParams.get("real_height_mm") || "100.0",
+        crop_bottom_mm: searchParams.get("crop_bottom_mm") || "8.0",
+        crop_top_mm: searchParams.get("crop_top_mm") || "60.0",
+        first_band_mm: searchParams.get("first_band_mm") || "16.0",
+        band_spacing_mm: searchParams.get("band_spacing_mm") || "10.5",
+        num_bands: searchParams.get("num_bands") || "17",
+        // dynamically computed; always kept as non-negative float string
+        estimated_band_width_mm: searchParams.get("estimated_band_width_mm") || "0.0",
     });
     const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
 
@@ -642,6 +655,7 @@ console.log(currentEntry);
 
 
 const handlePreProcess = async () => {
+  setPreprocessLoading(true);
   try {
     const preprocessOrder = selectedPreprocessing;
     console.log(preprocessOrder);
@@ -651,6 +665,8 @@ const handlePreProcess = async () => {
     setPreprocessedData(data);
   } catch (e) {
     console.error(e);
+  } finally {
+    setPreprocessLoading(false);
   }
 };
 
@@ -969,6 +985,9 @@ const grayData = useMemo(
   () => (preprocessedData?.[bandKey]?.grayscale ?? []).map((y, x) => ({ x, y })),
   [preprocessedData, bandKey]
 );
+
+console.log("blue data", blueData);
+
 
 // Flatten and map to table-ready format - API peaks only (fallback disabled)
 const allPeaksForTable = useMemo(() => {
@@ -1326,15 +1345,11 @@ const handleFinishEdit = () => {
 };
 const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = event.target;
-    // All fields in formData are stored as numbers; parse input accordingly
-    let floatValue = parseFloat(value);
-    if (isNaN(floatValue) || floatValue < 0) {
-      floatValue = 0.0;
-    }
-    setFormData((prev) => ({
+    // Keep raw input (including empty string) so typing/backspacing feels natural.
+    setFormData((prev: QuantFormData) => ({
       ...prev,
-      [name]: floatValue,
-    }));
+      [name]: value,
+    }) as QuantFormData);
   };
 const validateForm = () => {
         const errors: { [key: string]: string } = {};
@@ -1343,20 +1358,41 @@ const validateForm = () => {
         //   errors.image = "Please select at least one image.";
         // }
       
-        Object.entries(formData).forEach(([key, value]) => {
-          const val = value as any;
-          if (val === '' || val === null) {
+        const numericKeys: (keyof QuantFormData)[] = [
+          "real_width_mm",
+          "real_height_mm",
+          "crop_bottom_mm",
+          "crop_top_mm",
+          "first_band_mm",
+          "band_spacing_mm",
+          "num_bands",
+          "estimated_band_width_mm",
+        ];
+
+        for (const key of numericKeys) {
+          const raw = String(formData[key] ?? "").trim();
+
+          if (raw === "") {
             errors[key] = "This field is required.";
-          } else if (key !== 'estimated_band_width_mm' && typeof val === 'number' && val < 0) {
-            errors[key] = "Value must be non-negative.";
-        } else if (
-            key === 'estimated_band_width_mm' &&
-            val !== 'none' &&
-            isNaN(parseFloat(String(val)))
-          ) {
-            errors[key] = "Must be a number or 'none'.";
+            continue;
           }
-        });
+
+          const parsed = Number(raw);
+          if (!Number.isFinite(parsed)) {
+            errors[key] = "Must be a valid number.";
+            continue;
+          }
+
+          if (parsed < 0) {
+            errors[key] = "Value must be non-negative.";
+            continue;
+          }
+
+          if (key === "num_bands" && parsed < 1) {
+            errors[key] = "Must be at least 1.";
+            continue;
+          }
+        }
       
         setFormErrors(errors);
         return Object.keys(errors).length === 0;
@@ -1395,8 +1431,8 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
     uploadFormData.append('image', file);
   
     // Append other form data
-    Object.entries(formData).forEach(([key, value]) => {
-        uploadFormData.append(key, value.toString());
+    (Object.keys(formData) as Array<keyof QuantFormData>).forEach((key) => {
+      uploadFormData.append(String(key), formData[key]);
     });
   
     try {
@@ -1646,19 +1682,102 @@ const handleGetSelectedPeak = () => {
     console.warn("No standards selected. Please select at least one standard.");
     notify('warning', 'No standards selected. Please select at least one standard.');
   } else {
-    // Filter allPeaksOverAllData to only selected standard tracks
-    const allowed = new Set(
-      selectedKeys
-        .map((k) => parseInt(k.replace("band-", ""), 10))
-        .filter((n) => Number.isFinite(n))
-            .map((n) => String(n + 1)) // 1-based keys as strings
-    );
-  
-    const filteredAllPeaks = Object.fromEntries(
-      Object.entries(allPeaksOverAllData).filter(([k]) => allowed.has(String(k)))
-    ) as typeof allPeaksOverAllData;
-  
-    const matches = isPeakInAllTracks(filteredAllPeaks, chosen, hRFRangeTolerance);
+    // Get the selected standard track indices (0-based)
+    const standardTrackIndices = selectedKeys
+      .map((k) => parseInt(k.replace("band-", ""), 10))
+      .filter((n) => Number.isFinite(n));
+
+    /**
+     * Check if the selected peak is present within threshold in all selected standard tracks.
+     * Only checks the same channel as the selected peak.
+     * @param selectedPeak - The peak selected by the user (channel, band, peak)
+     * @param standardIndices - Array of 0-based track indices for selected standards
+     * @param threshold - The hRF tolerance for matching peaks
+     * @returns Array of matched peaks or false if any standard track is missing the peak
+     */
+    const isPeakInSelectedStandards = (
+      selectedPeak: { channel: ChannelName; band: number; peak: DataPoint },
+      standardIndices: number[],
+      threshold: number
+    ): { channel: ChannelName; band: number; peak: DataPoint; area?: number }[] | false => {
+      const { channel, peak } = selectedPeak;
+      const targetX = peak?.x;
+
+      console.log('[isPeakInSelectedStandards] Checking peak:', { channel, targetX, threshold, standardIndices });
+
+      if (!Number.isFinite(targetX) || !Number.isFinite(threshold) || threshold < 0) {
+        console.warn('[isPeakInSelectedStandards] Invalid targetX or threshold', { targetX, threshold });
+        return false;
+      }
+
+      const matchedPeaks: { channel: ChannelName; band: number; peak: DataPoint; area?: number }[] = [];
+
+      for (const trackIndex of standardIndices) {
+        // apiPeaksResponse uses 1-based keys as strings
+        const trackKey = String(trackIndex + 1);
+        const trackData = apiPeaksResponse?.[trackKey];
+
+        if (!trackData) {
+          console.warn('[isPeakInSelectedStandards] No API peaks data for track', { trackIndex, trackKey });
+          return false;
+        }
+
+        // Get the channel peaks object from apiPeaksResponse
+        // Structure: { "50": { peak_height, peak_x, start_end, area }, "56": {...}, ... }
+        const channelPeaks = trackData[channel];
+
+        if (!channelPeaks || typeof channelPeaks !== 'object' || Object.keys(channelPeaks).length === 0) {
+          console.warn('[isPeakInSelectedStandards] No peaks in channel for track', { trackIndex, channel });
+          return false;
+        }
+
+        // Find the peak within threshold of targetX
+        // Keys are peak_x positions as strings
+        const peakEntries = Object.entries(channelPeaks);
+        let matchedPeak: { x: number; y: number; area?: number } | null = null;
+        let minDiff = Infinity;
+
+        for (const [peakXStr, peakData] of peakEntries) {
+          const peakX = Number(peakXStr);
+          const diff = Math.abs(peakX - targetX);
+          
+          if (diff <= threshold && diff < minDiff) {
+            minDiff = diff;
+            matchedPeak = {
+              x: (peakData as any).peak_x ?? peakX,
+              y: (peakData as any).peak_height ?? 0,
+              area: (peakData as any).area
+            };
+          }
+        }
+
+        if (!matchedPeak) {
+          const allPeakXs = peakEntries.map(([xStr]) => Number(xStr));
+          const closestDiff = Math.min(...allPeakXs.map(x => Math.abs(x - targetX)));
+          console.warn('[isPeakInSelectedStandards] No peak within threshold', {
+            trackIndex,
+            channel,
+            targetX,
+            threshold,
+            closestDiff,
+            availablePeaks: allPeakXs
+          });
+          return false;
+        }
+
+        matchedPeaks.push({ 
+          channel, 
+          band: trackIndex, 
+          peak: { x: matchedPeak.x, y: matchedPeak.y },
+          area: matchedPeak.area
+        });
+      }
+
+      console.log('[isPeakInSelectedStandards] All standards matched:', matchedPeaks);
+      return matchedPeaks;
+    };
+
+    const matches = isPeakInSelectedStandards(chosen, standardTrackIndices, hRFRangeTolerance);
     if (!Array.isArray(matches) || matches.length === 0) {
       console.warn("No matching peaks across selected standard tracks. Adjust selection or parameters.");
       notify('warning', 'No matching peaks across selected standard tracks.');
@@ -1709,6 +1828,7 @@ const handleGetSelectedPeak = () => {
 
       // Always hit the API, even if arrays are empty (backend should validate)
       (async () => {
+        setCalibrationLoading(true);
         try {
           const { data } = await axios.post(
             "http://localhost/calibrate/",
@@ -1717,17 +1837,83 @@ const handleGetSelectedPeak = () => {
           );
           setCalibrationResult(data);
           console.log("Calibrate API response:", data);
-          notify('success', 'Calibration completed.');;
+          notify('success', 'Calibration completed.');
         } catch (err: unknown) {
           console.error("Calibrate API error:", err);
           const msg =
             axios.isAxiosError(err) ? err.message :
             err instanceof Error ? err.message : '';
           notify('error', `Calibration failed${msg ? `: ${msg}` : ''}`);
+        } finally {
+          setCalibrationLoading(false);
         }
       })();
     }
   }
+
+  // const getIdx = (k: string) => parseInt(k.replace("band-", ""), 10);
+
+  //     // Known concentrations: always use the quantity entered by user in the field
+  //     const known_conc_local = selectedKeys
+  //       .map((k) => autoPeakValues[getIdx(k)])
+  //       .filter((v): v is number => Number.isFinite(v));
+  //        // Debug: log the selected standards and their values
+      
+  //     // Known peaks: use either area or height based on quantityMetric
+  //     // quantityValues already contains the correct metric from recalcQuantityValues
+  //     const known_peaks_local = selectedKeys
+  //       .map((k) => quantityValues[getIdx(k)])
+  //       .filter((v): v is number => Number.isFinite(v));
+
+  //     const allIdx = Array.from({ length: totalTracks }, (_, i) => i);
+  //     const unknownIdx = allIdx.filter((i) => !selectedKeys.includes(`band-${i}`));
+
+  //     // Unknown peaks: use quantityValues (area or height based on metric) for non-standard tracks
+  //     const unknown_peaks_local = unknownIdx
+  //       .map((i) => quantityValues[i])
+  //       .filter((v): v is number => Number.isFinite(v));
+
+  //     console.log('=== CALIBRATION DATA ===');
+  //     console.log('Selected Standards Keys:', selectedKeys);
+  //     console.log('autoPeakValues (user-entered concentrations):', autoPeakValues);
+  //     console.log('quantityValues (peak metric - height or area):', quantityValues);
+  //     console.log('Current quantityMetric:', quantityMetric);
+
+  //     const payload = {
+  //       known_conc: known_conc_local,
+  //       known_peaks: known_peaks_local,
+  //       unknown_peaks: unknown_peaks_local,
+  //       model_type: modelType,
+  //     };
+
+  //     // Log calibration data for debugging
+  //     console.log('Calibration Payload:', {
+  //       quantityMetric,
+  //       known_conc: known_conc_local,
+  //       known_peaks: known_peaks_local,
+  //       unknown_peaks: unknown_peaks_local,
+  //       model_type: modelType
+  //     });
+
+  //     // Always hit the API, even if arrays are empty (backend should validate)
+  //     (async () => {
+  //       try {
+  //         const { data } = await axios.post(
+  //           "http://localhost/calibrate/",
+  //           payload,
+  //           { headers: { "Content-Type": "application/json" }, timeout: 15000 }
+  //         );
+  //         setCalibrationResult(data);
+  //         console.log("Calibrate API response:", data);
+  //         notify('success', 'Calibration completed.');;
+  //       } catch (err: unknown) {
+  //         console.error("Calibrate API error:", err);
+  //         const msg =
+  //           axios.isAxiosError(err) ? err.message :
+  //           err instanceof Error ? err.message : '';
+  //         notify('error', `Calibration failed${msg ? `: ${msg}` : ''}`);
+  //       }
+  //     })();
   // --- end calibrate ---
 
   // Save snapshot
@@ -1763,7 +1949,7 @@ const openSelectStandardModal = () => {
   (document.getElementById("select_standard_modal") as HTMLDialogElement | null)?.showModal();
 };
 
-if (loading) return <p>Loading...</p>;
+if (loading) return <span className="loading loading-bars loading-xl"></span>;
 if (error) return <p>Error: {error}</p>;
 if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
@@ -1878,12 +2064,15 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
       <input
         type="number"
         name={field.name}
-        value={formData[field.name] as number | string}
+        value={formData[field.name]}
         min="0"
         step="0.01"
         onChange={handleInputChange}
         className={`input input-bordered input-sm w-full ${formErrors[field.name] ? 'input-error' : ''}`}
       />
+      {formErrors[field.name] && (
+        <span className="mt-1 text-xs text-error">{formErrors[field.name]}</span>
+      )}
     </div>
   ))}
   {/* Submit Button */}
@@ -2141,18 +2330,26 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
         {/* Generate Densitogram Button */}
         <button
-          className="btn btn-primary w-full mb-4"
+          className={`btn btn-primary w-full mb-4 ${preprocessLoading ? 'loading' : ''}`}
           // onClick={() => handlePeakDetection(data, params)}
-          onClick={handlePreProcess
-          }
+          onClick={handlePreProcess}
+          disabled={preprocessLoading}
         >
-          Apply Preprocessing 
+          {preprocessLoading ? <><span className="loading loading-spinner loading-sm"></span> Processing...</> : 'Apply Preprocessing'}  
         </button>
             </div>
         )}
 
+            {/* Preprocessing Loading Spinner */}
+            {preprocessLoading && step === 1 && (
+              <div className="flex flex-col items-center justify-center py-12">
+                <span className="loading loading-spinner loading-lg"></span>
+                <p className="mt-4 text-gray-600">Preprocessing data...</p>
+              </div>
+            )}
+
             {/* Densitogram Graph */}
-            {preprocessedData && step === 1 && (
+            {preprocessedData && step === 1 && !preprocessLoading && (
                 <DensitogramGraph bandStep={bandKey} preprocessing={selectedPreprocessing} onProcessedData={handleProcessedData} densitogram={preprocessedData}/>
 
             )}
@@ -2341,7 +2538,7 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                         type="number"
                         className="w-full border rounded p-2"
                         value={hRFRangeTolerance}
-                        onChange={(e) => setHRFRangeTolerance(parseInt(e.target.value) || 800)}
+                        onChange={(e) => setHRFRangeTolerance(parseInt(e.target.value))}
                         min={1}
                     />
                 </div>
@@ -2630,7 +2827,14 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
       </div>
 
       {/* Densitogram Graphs - Only show selected channels */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative">
+        {/* Loading overlay for peak detection */}
+        {apiPeaksLoading && (
+          <div className="absolute inset-0 bg-white/70 z-10 flex flex-col items-center justify-center rounded-lg">
+            <span className="loading loading-spinner loading-lg"></span>
+            <p className="mt-2 text-gray-600 font-medium">Processing peaks...</p>
+          </div>
+        )}
         {selectedChannels.includes("red") && (
           <div className="w-full">
             <D3InteractiveChart
@@ -2793,8 +2997,15 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
   {showCurve && <CalibrationCurve />}
 </div>
     
+  {/* Calibration Loading Spinner */}
+  {calibrationLoading && (
+    <div className="mt-8 flex flex-col items-center">
+      <span className="loading loading-spinner loading-lg"></span>
+      <p className="mt-2 text-gray-600">Calculating calibration...</p>
+    </div>
+  )}
 
-  {calibrationResult && (
+  {calibrationResult && !calibrationLoading && (
     <div className="mt-8 flex flex-col items-center">
       <h3 className="text-lg font-semibold mb-2">Calibration Curve</h3>
 

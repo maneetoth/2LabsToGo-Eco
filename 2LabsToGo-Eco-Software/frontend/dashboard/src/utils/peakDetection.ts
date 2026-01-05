@@ -12,7 +12,7 @@ export type DataPoint = {
 // };
 
 type PeakPoint = { x: number; y: number };
-export type ChannelName = 'red' | 'green' | 'blue' | 'grayscale';
+export type ChannelName = "red" | "green" | "blue" | "grayscale";
 type DetectedPeaks = {
   [trackIndex: number]: {
     [channel in ChannelName]: PeakPoint[];
@@ -32,7 +32,7 @@ export interface PeakDetectionParams {
   hrfRange: [number, number];
 }
 
-type Channel = 'red' | 'green' | 'blue' | 'grayscale';
+type Channel = "red" | "green" | "blue" | "grayscale";
 
 interface InputBand {
   red: DataPoint[];
@@ -53,11 +53,16 @@ type AllPeaks = PeakBand[];
 
 type TrackData = {
   trackIndex: number;
-  data: Array<{ hRF: number; red: number; green: number; blue: number; grayscale: number }>;
+  data: Array<{
+    hRF: number;
+    red: number;
+    green: number;
+    blue: number;
+    grayscale: number;
+  }>;
 };
 
 type Input = TrackData[];
-
 
 export type PeakData = {
   [trackName: string]: {
@@ -68,15 +73,21 @@ export function detectPeaks(
   data: DataPoint[],
   params: PeakDetectionParams
 ): DataPoint[] {
-  const { minIncreasingSteps, minDecreasingSteps, minPeakHeight, hrfRange } = params;
+  const { minIncreasingSteps, minDecreasingSteps, minPeakHeight, hrfRange } =
+    params;
   const peaks: DataPoint[] = [];
-  console.log('--- detectPeaks called ---');
-  console.log('Params:', { minIncreasingSteps, minDecreasingSteps, minPeakHeight, hrfRange });
+  console.log("--- detectPeaks called ---");
+  console.log("Params:", {
+    minIncreasingSteps,
+    minDecreasingSteps,
+    minPeakHeight,
+    hrfRange,
+  });
   // Filter data to hrfRange
   const filteredData = data.filter(
     (point) => point.x >= hrfRange[0] && point.x <= hrfRange[1]
   );
-  console.log('Filtered data points:', filteredData.length, filteredData);
+  console.log("Filtered data points:", filteredData.length, filteredData);
 
   for (let i = 0; i < filteredData.length; i++) {
     let isIncreasing = true;
@@ -84,10 +95,7 @@ export function detectPeaks(
 
     // Check increasing steps before i
     for (let j = 1; j <= minIncreasingSteps; j++) {
-      if (
-        i - j < 0 ||
-        filteredData[i - j + 1].y <= filteredData[i - j].y
-      ) {
+      if (i - j < 0 || filteredData[i - j + 1].y <= filteredData[i - j].y) {
         isIncreasing = false;
         break;
       }
@@ -105,34 +113,35 @@ export function detectPeaks(
     }
 
     // If peak
-    if (
-      isIncreasing &&
-      isDecreasing &&
-      filteredData[i].y >= minPeakHeight
-    ) {
+    if (isIncreasing && isDecreasing && filteredData[i].y >= minPeakHeight) {
       peaks.push(filteredData[i]);
-      console.log(
-        `Selected peak at index ${i}:`,
-        filteredData[i],
-        '| isIncreasing:', isIncreasing,
-        '| isDecreasing:', isDecreasing,
-        '| y:', filteredData[i].y
-      );
+      // console.log(
+      //   `Selected peak at index ${i}:`,
+      //   filteredData[i],
+      //   "| isIncreasing:",
+      //   isIncreasing,
+      //   "| isDecreasing:",
+      //   isDecreasing,
+      //   "| y:",
+      //   filteredData[i].y
+      // );
     } else {
-      console.log(
-        `Rejected point at index ${i}:`,
-        filteredData[i],
-        '| isIncreasing:', isIncreasing,
-        '| isDecreasing:', isDecreasing,
-        '| y:', filteredData[i].y
-      );
+      // console.log(
+      //   `Rejected point at index ${i}:`,
+      //   filteredData[i],
+      //   "| isIncreasing:",
+      //   isIncreasing,
+      //   "| isDecreasing:",
+      //   isDecreasing,
+      //   "| y:",
+      //   filteredData[i].y
+      // );
     }
   }
 
-  console.log('Detected peaks:', peaks);
+  console.log("Detected peaks:", peaks);
   return peaks;
 }
-
 
 // export function validatePeakSelection(
 //   allPeaks: { [trackName: string]: PeakBand }, // updated type
@@ -153,7 +162,6 @@ export function detectPeaks(
 //       foundInTracks++;
 //     }
 //   }
-
 
 //   return foundInTracks > 1;
 // }
@@ -182,22 +190,27 @@ export function validatePeakSelection(
   return true;
 }
 
-
-
-
-
 export function processAllBands(
-  inputData: Array<{ hRF: number; red: number; green: number; blue: number; grayscale: number }>,
+  inputData: Array<{
+    hRF: number;
+    red: number;
+    green: number;
+    blue: number;
+    grayscale: number;
+  }>,
   params: PeakDetectionParams
 ): PeakBand {
-const red = inputData.map((point) => ({ x: point.hRF, y: point.red }));
-const green = inputData.map((point) => ({ x: point.hRF, y: point.green }));
-const blue = inputData.map((point) => ({ x: point.hRF, y: point.blue }));
-const grayscale = inputData.map((point) => ({ x: point.hRF, y: point.grayscale }));
+  const red = inputData.map((point) => ({ x: point.hRF, y: point.red }));
+  const green = inputData.map((point) => ({ x: point.hRF, y: point.green }));
+  const blue = inputData.map((point) => ({ x: point.hRF, y: point.blue }));
+  const grayscale = inputData.map((point) => ({
+    x: point.hRF,
+    y: point.grayscale,
+  }));
 
-console.log('---------------------');
-console.log(red, green, blue, grayscale);
-console.log(params);
+  console.log("---------------------");
+  console.log(red, green, blue, grayscale);
+  console.log(params);
 
   return {
     red: detectPeaks(red, params),
@@ -206,7 +219,6 @@ console.log(params);
     grayscale: detectPeaks(grayscale, params),
   };
 }
-
 
 export function processAllTracksFromPreprocessed(
   allTracks: {
@@ -246,14 +258,27 @@ export function processAllTracksFromPreprocessed(
 export function isPeakInAllTracks(
   allPeaks: DetectedPeaks,
   selectedPeak: SelectedPeak,
-  threshold = 100
+  threshold = 500
 ): SelectedPeak[] | false {
   const { channel, peak } = selectedPeak;
   const targetX = peak?.x;
-  console.log('selectedPeak in fnnnn', selectedPeak);
+  console.log("%%%%%%%%%%%%%%%%%%%%%");
 
-  if (!Number.isFinite(targetX) || !Number.isFinite(threshold) || threshold < 0) {
-    console.warn('[isPeakInAllTracks] Invalid targetX or threshold', { targetX, threshold });
+  console.log("selectedPeak in fnnnn", selectedPeak);
+  console.log("threshold", threshold);
+  console.log("allpeaks", allPeaks);
+
+  console.log("%%%%%%%%%%%%%%%%%%%%%");
+
+  if (
+    !Number.isFinite(targetX) ||
+    !Number.isFinite(threshold) ||
+    threshold < 0
+  ) {
+    console.warn("[isPeakInAllTracks] Invalid targetX or threshold", {
+      targetX,
+      threshold,
+    });
     return false;
   }
 
@@ -263,20 +288,34 @@ export function isPeakInAllTracks(
     const trackIndex = Number(trackIndexStr);
     const peaksInChannel = Array.isArray(peaksByChannel?.[channel])
       ? peaksByChannel[channel].filter(
-          (p): p is PeakPoint => p && Number.isFinite((p as any).x) && Number.isFinite((p as any).y)
+          (p): p is PeakPoint =>
+            p && Number.isFinite((p as any).x) && Number.isFinite((p as any).y)
         )
       : [];
 
     if (peaksInChannel.length === 0) {
-      console.warn('[isPeakInAllTracks] No peaks in channel for track', { trackIndex, channel });
+      console.warn("[isPeakInAllTracks] No peaks in channel for track", {
+        trackIndex,
+        channel,
+      });
       return false;
     }
 
-    const match = peaksInChannel.find((p) => Math.abs(p.x - targetX) <= threshold);
+    const match = peaksInChannel.find(
+      (p) => Math.abs(p.x - targetX) <= threshold
+    );
 
     if (!match) {
-      const minDiff = Math.min(...peaksInChannel.map((p) => Math.abs(p.x - targetX)));
-      console.warn('[isPeakInAllTracks] No match within threshold', { trackIndex, channel, targetX, threshold, minDiff });
+      const minDiff = Math.min(
+        ...peaksInChannel.map((p) => Math.abs(p.x - targetX))
+      );
+      console.warn("[isPeakInAllTracks] No match within threshold", {
+        trackIndex,
+        channel,
+        targetX,
+        threshold,
+        minDiff,
+      });
       return false;
     }
 

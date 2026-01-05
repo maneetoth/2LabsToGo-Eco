@@ -38,7 +38,13 @@ def fit_calibration_curve(concentrations, peak_areas, model_type='hill'):
     Returns:
         popt (ndarray): Optimal parameters.
         model_func (callable): The model function.
+
+kd tree 
+true false 
+
     """
+
+
     concentrations = np.asarray(concentrations, dtype=float)
     peak_areas    = np.asarray(peak_areas, dtype=float)
 

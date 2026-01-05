@@ -17,16 +17,29 @@ const Dashboard: React.FC = () => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const router = useRouter()
     const dispatch = useDispatch<AppDispatch>()
-    const [formData, setFormData] = useState({
-        real_width_mm: 200.0,
-        real_height_mm: 100.0,
-        crop_bottom_mm: 8.0,
-        crop_top_mm: 60.0,
-        first_band_mm: 16.0,
-        band_spacing_mm: 10.5,
-        num_bands: 17.0,
-        // dynamically computed; always kept as positive float
-        estimated_band_width_mm: 0.0,
+
+    type DashboardFormData = {
+        real_width_mm: string;
+        real_height_mm: string;
+        crop_bottom_mm: string;
+        crop_top_mm: string;
+        first_band_mm: string;
+        band_spacing_mm: string;
+        num_bands: string;
+        // dynamically computed; kept as non-negative float string
+        estimated_band_width_mm: string;
+    };
+
+    const [formData, setFormData] = useState<DashboardFormData>({
+        real_width_mm: "200.0",
+        real_height_mm: "100.0",
+        crop_bottom_mm: "8.0",
+        crop_top_mm: "60.0",
+        first_band_mm: "16.0",
+        band_spacing_mm: "10.5",
+        num_bands: "17",
+        // dynamically computed; always non-negative
+        estimated_band_width_mm: "0.0",
     });
     // Track if user manually overrides the auto band width
     const [manualBandWidthOverride, setManualBandWidthOverride] = useState(false);
@@ -34,32 +47,53 @@ const Dashboard: React.FC = () => {
     const [selectedPreprocessing, setSelectedPreprocessing] = useState<PreprocessValue[]>([]);
     const [preprocessedData, setPreprocessedData] = useState<PreprocessedOutput | null>(null);
     const [bandStep, setBandStep] = useState(1);
+    const [isLoading, setIsLoading] = useState(false);
 
-    const validateForm = () => {
-        const errors: { [key: string]: string } = {};
-      
-        if (images.length === 0) {
-          errors.image = "Please select at least one image.";
-        }
-      
-        Object.entries(formData).forEach(([key, value]) => {
-          const val = value as any;
-          if (val === '' || val === null) {
-            errors[key] = "This field is required.";
-          } else if (key !== 'estimated_band_width_mm' && typeof val === 'number' && val < 0) {
-            errors[key] = "Value must be non-negative.";
-        } else if (
-            key === 'estimated_band_width_mm' &&
-            val !== 'none' &&
-            isNaN(parseFloat(String(val)))
-          ) {
-            errors[key] = "Must be a number or 'none'.";
-          }
-        });
-      
-        setFormErrors(errors);
-        return Object.keys(errors).length === 0;
-      };
+        const validateForm = () => {
+                const errors: { [key: string]: string } = {};
+
+                if (images.length === 0) {
+                        errors.image = "Please select at least one image.";
+                }
+
+                const numericKeys: (keyof DashboardFormData)[] = [
+                        "real_width_mm",
+                        "real_height_mm",
+                        "crop_bottom_mm",
+                        "crop_top_mm",
+                        "first_band_mm",
+                        "band_spacing_mm",
+                        "num_bands",
+                        "estimated_band_width_mm",
+                ];
+
+                for (const key of numericKeys) {
+                        const raw = String(formData[key] ?? "").trim();
+                        if (raw === "") {
+                                errors[key] = "This field is required.";
+                                continue;
+                        }
+
+                        const parsed = Number(raw);
+                        if (!Number.isFinite(parsed)) {
+                                errors[key] = "Must be a valid number.";
+                                continue;
+                        }
+
+                        if (parsed < 0) {
+                                errors[key] = "Value must be non-negative.";
+                                continue;
+                        }
+
+                        if (key === "num_bands" && parsed < 1) {
+                                errors[key] = "Must be at least 1.";
+                                continue;
+                        }
+                }
+
+                setFormErrors(errors);
+                return Object.keys(errors).length === 0;
+        };
       
 
 
@@ -129,12 +163,13 @@ useEffect(() => {
     const handleQuantTLC = async () => {
         if (!validateForm()) return;
       
+        setIsLoading(true);
         const uploadFormData = new FormData();
         uploadFormData.append('image', images[currentIndex]);
       
-        Object.entries(formData).forEach(([key, value]) => {
-          uploadFormData.append(key, value.toString());
-        });
+                (Object.keys(formData) as Array<keyof DashboardFormData>).forEach((key) => {
+                        uploadFormData.append(String(key), formData[key]);
+                });
       
         try {
           const resultAction = await dispatch(fetchBandData(uploadFormData));
@@ -145,14 +180,16 @@ useEffect(() => {
             
             const queryParams = new URLSearchParams();
             queryParams.append('image', fullImageUrl);
-            Object.entries(formData).forEach(([key, value]) => {
-                queryParams.append(key, value.toString());
+            (Object.keys(formData) as Array<keyof DashboardFormData>).forEach((key) => {
+                queryParams.append(String(key), formData[key]);
             });
 
             router.push(`/analysis/quant?${queryParams.toString()}`);
           }
         } catch (error) {
           console.error('Error uploading image:', error);
+        } finally {
+          setIsLoading(false);
         }
       };
 
@@ -160,12 +197,11 @@ useEffect(() => {
     // Update: handle input change for each field, with special handling for estimated_band_width_mm
     const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = event.target;
-        let floatValue = parseFloat(value);
-        if (isNaN(floatValue) || floatValue < 0) floatValue = 0.0;
-        setFormData(prev => ({
+        // Keep raw input (including empty string) so typing/backspacing is natural.
+        setFormData((prev: DashboardFormData) => ({
             ...prev,
-            [name]: floatValue,
-        }));
+            [name]: value,
+        }) as DashboardFormData);
         if (name === 'estimated_band_width_mm') {
             setManualBandWidthOverride(true);
         }
@@ -174,15 +210,23 @@ useEffect(() => {
     // Dynamically compute estimated_band_width_mm when related inputs change unless user overrode it.
     useEffect(() => {
         if (manualBandWidthOverride) return; // respect manual override
-        const { crop_top_mm, first_band_mm, band_spacing_mm, num_bands } = formData;
+        const toNum = (s: string) => {
+            const n = Number(s);
+            return Number.isFinite(n) ? n : 0;
+        };
+
+        const crop_top_mm = toNum(formData.crop_top_mm);
+        const first_band_mm = toNum(formData.first_band_mm);
+        const band_spacing_mm = toNum(formData.band_spacing_mm);
+        const num_bands = toNum(formData.num_bands);
         // Available migration length after first band application
         const available = Math.max(0, crop_top_mm - first_band_mm);
         const totalSpacing = Math.max(0, (num_bands - 1) * band_spacing_mm);
         const rawWidth = available > totalSpacing && num_bands > 0
             ? (available - totalSpacing) / num_bands
             : 0;
-        const width = Number.isFinite(rawWidth) && rawWidth > 0 ? parseFloat(rawWidth.toFixed(4)) : 0.0;
-        setFormData(prev => ({ ...prev, estimated_band_width_mm: width }));
+        const width = Number.isFinite(rawWidth) && rawWidth > 0 ? Number(rawWidth.toFixed(4)) : 0.0;
+        setFormData((prev: DashboardFormData) => ({ ...prev, estimated_band_width_mm: String(width) }));
     }, [formData.crop_top_mm, formData.first_band_mm, formData.band_spacing_mm, formData.num_bands, manualBandWidthOverride]);
 
     return (
@@ -197,6 +241,11 @@ useEffect(() => {
                     accept="image/*"
                     onChange={handleFileChange}
                 />
+                {formErrors.image && (
+                    <label className="label">
+                        <span className="label-text-alt text-error">{formErrors.image}</span>
+                    </label>
+                )}
             </fieldset>
 
             {/* Show Image & Form Only If Images Are Selected */}
@@ -245,6 +294,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.real_width_mm ? 'input-error' : ''}`}
                             />
+                            {formErrors.real_width_mm && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.real_width_mm}</span>
+                                </label>
+                            )}
                         </div>
                         <div className="form-control">
                             <label className="label">
@@ -259,6 +313,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.real_height_mm? 'input-error' : ''}`}
                             />
+                            {formErrors.real_height_mm && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.real_height_mm}</span>
+                                </label>
+                            )}
                         </div>
                         <div className="form-control">
                             <label className="label">
@@ -273,6 +332,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.crop_bottom_mm ? 'input-error' : ''}`}
                             />
+                            {formErrors.crop_bottom_mm && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.crop_bottom_mm}</span>
+                                </label>
+                            )}
                         </div>
                         <div className="form-control">
                             <label className="label">
@@ -287,6 +351,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.crop_top_mm ? 'input-error' : ''}`}
                             />
+                            {formErrors.crop_top_mm && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.crop_top_mm}</span>
+                                </label>
+                            )}
                         </div>
                         <div className="form-control">
                             <label className="label">
@@ -301,6 +370,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.first_band_mm ? 'input-error' : ''}`}
                             />
+                            {formErrors.first_band_mm && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.first_band_mm}</span>
+                                </label>
+                            )}
                         </div>
                         <div className="form-control">
                             <label className="label">
@@ -315,6 +389,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.band_spacing_mm ? 'input-error' : ''}`}
                             />
+                            {formErrors.band_spacing_mm && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.band_spacing_mm}</span>
+                                </label>
+                            )}
                         </div>
                         <div className="form-control">
                             <label className="label">
@@ -329,6 +408,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.num_bands ? 'input-error' : ''}`}
                             />
+                            {formErrors.num_bands && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.num_bands}</span>
+                                </label>
+                            )}
                         </div>
                         <div className="form-control">
                             <label className="label">
@@ -343,6 +427,11 @@ useEffect(() => {
                                 onChange={handleInputChange}
                                 className={`input input-bordered w-full ${formErrors.estimated_band_width_mm ? 'input-error' : ''}`}
                             />
+                            {formErrors.estimated_band_width_mm && (
+                                <label className="label">
+                                    <span className="label-text-alt text-error">{formErrors.estimated_band_width_mm}</span>
+                                </label>
+                            )}
                             {!manualBandWidthOverride && (
                                 <p className="text-xs text-neutral-500 mt-1">Auto-calculated. Change value to override.</p>
                             )}
@@ -352,8 +441,12 @@ useEffect(() => {
                     {/* Action Buttons */}
                     <div className="flex justify-center gap-4 mt-6">
                         {/* <button className="btn btn-primary">Move to RTLC</button> */}
-                        <button className="btn btn-secondary" onClick={handleQuantTLC}>
-                            Next
+                        <button 
+                            className={`btn btn-secondary ${isLoading ? 'loading' : ''}`} 
+                            onClick={handleQuantTLC}
+                            disabled={isLoading}
+                        >
+                            {isLoading ? <><span className="loading loading-spinner loading-lg"></span> Processing...</> : 'Next'}
                         </button>
                     </div>
                 </>
