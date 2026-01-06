@@ -186,7 +186,7 @@ const apiChartPeaks = useMemo<AllTracksChartPeaks>(() => {
   return transformApiPeaksToChartPeaks(apiPeaksResponse);
 }, [apiPeaksResponse]);
 
-type CalibrationModel = 'none' | 'hill' | 'mm_origin' | 'mm_intercept' | 'linear' | 'linear_origin';
+type CalibrationModel = 'none' | 'hill' | 'mm_origin' | 'mm_intercept' | 'linear' | 'linear_origin'| 'poly2';
 const [modelType, setModelType] = useState<CalibrationModel>('none');
 const modelOptions: { value: CalibrationModel; label: string }[] = [
   { value: 'none', label: 'Select model' },
@@ -195,6 +195,7 @@ const modelOptions: { value: CalibrationModel; label: string }[] = [
   { value: 'mm_intercept', label: 'Michaelis–Menten (+ intercept)' },
   { value: 'linear', label: 'Linear' },
   { value: 'linear_origin', label: 'Linear (origin)' },
+  {value: 'poly2', label: 'Polynomial' }
 ];
 // .
 

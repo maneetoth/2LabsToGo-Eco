@@ -16,6 +16,12 @@ def michaelis_menten_origin(s, vmax, km):
 def michaelis_menten_intercept(s, vmax, km, y_intercept):
     return (vmax * s) / (km + s) + y_intercept
 
+# Polynomial model
+def poly2(s, a0, a1, a2):
+    """Quadratic calibration: y = a0 + a1*x + a2*x^2"""
+    s = np.asarray(s, dtype=float)
+    return a0 + a1 * s + a2 * (s ** 2)
+
 # Linear models
 def linear(s, m, b):
     """Linear calibration: y = m*x + b"""
@@ -33,7 +39,7 @@ def fit_calibration_curve(concentrations, peak_areas, model_type='hill'):
     Parameters:
         concentrations (array-like): Known concentrations.
         peak_areas (array-like): Corresponding peak areas.
-        model_type (str): 'hill', 'mm_origin', 'mm_intercept', 'linear', or 'linear_origin'.
+        model_type (str): 'hill', 'mm_origin', 'mm_intercept', 'linear', 'linear_origin', or 'poly2'.
 
     Returns:
         popt (ndarray): Optimal parameters.
@@ -70,8 +76,24 @@ true false
         initial_guess = [m0]
         model_func = linear_origin
         bounds = ([0.0], [np.inf])
+    elif model_type == 'poly2':
+        # Fit y = a0 + a1*x + a2*x^2 using scikit-learn PolynomialFeatures
+        from sklearn.preprocessing import PolynomialFeatures
+        from sklearn.linear_model import LinearRegression
+
+        X = concentrations.reshape(-1, 1)
+        poly = PolynomialFeatures(degree=2, include_bias=True)
+        X_poly = poly.fit_transform(X)  # columns: [1, x, x^2]
+        reg = LinearRegression(fit_intercept=False)
+        reg.fit(X_poly, peak_areas)
+
+        consts = np.asarray(reg.coef_, dtype=float)
+        if consts.shape[0] != 3:
+            raise RuntimeError(f"poly2 fit expected 3 coefficients, got {consts.shape[0]}")
+
+        return consts, poly2
     else:
-        raise ValueError("Invalid model type. Choose 'hill', 'mm_origin', 'mm_intercept', 'linear', or 'linear_origin'.")
+        raise ValueError("Invalid model type. Choose 'hill', 'mm_origin', 'mm_intercept', 'linear', 'linear_origin', or 'poly2'.")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", OptimizeWarning)
@@ -124,6 +146,54 @@ def predict_concentration(peak_values, consts, model_type='hill'):
         m, = consts
         denom = m if abs(m) > eps else np.nan
         preds = y / denom
+    elif model_type == 'poly2':
+        a0, a1, a2 = map(float, consts)
+        # Solve a2*x^2 + a1*x + (a0 - y) = 0 for x
+        # Fallback to linear inversion if quadratic term is ~0
+        if abs(a2) <= 1e-18:
+            denom = a1 if abs(a1) > eps else np.nan
+            preds = (y - a0) / denom
+        else:
+            A = a2
+            B = a1
+            C = a0 - y
+            disc = B * B - 4.0 * A * C
+            valid = disc >= 0
+            sqrt_disc = np.zeros_like(disc, dtype=float)
+            sqrt_disc[valid] = np.sqrt(disc[valid])
+
+            x1 = np.full_like(y, np.nan, dtype=float)
+            x2 = np.full_like(y, np.nan, dtype=float)
+            denom2 = 2.0 * A
+            x1[valid] = (-B + sqrt_disc[valid]) / denom2
+            x2[valid] = (-B - sqrt_disc[valid]) / denom2
+
+            # Choose a physically meaningful root:
+            # - prefer non-negative root where derivative is positive (increasing branch)
+            dx1 = B + 2.0 * A * x1
+            dx2 = B + 2.0 * A * x2
+            x1_ok = np.isfinite(x1) & (x1 >= 0) & (dx1 > 0)
+            x2_ok = np.isfinite(x2) & (x2 >= 0) & (dx2 > 0)
+
+            preds = np.full_like(y, np.nan, dtype=float)
+            both_ok = x1_ok & x2_ok
+            preds[both_ok] = np.minimum(x1[both_ok], x2[both_ok])
+            only_x1 = x1_ok & ~x2_ok
+            preds[only_x1] = x1[only_x1]
+            only_x2 = x2_ok & ~x1_ok
+            preds[only_x2] = x2[only_x2]
+
+            # If neither passes the increasing-branch test, fall back to any non-negative root
+            x1_nn = np.isfinite(x1) & (x1 >= 0)
+            x2_nn = np.isfinite(x2) & (x2 >= 0)
+            unresolved = ~np.isfinite(preds) & (x1_nn | x2_nn)
+            if np.any(unresolved):
+                pick_x1 = unresolved & x1_nn & ~x2_nn
+                pick_x2 = unresolved & x2_nn & ~x1_nn
+                pick_both = unresolved & x1_nn & x2_nn
+                preds[pick_x1] = x1[pick_x1]
+                preds[pick_x2] = x2[pick_x2]
+                preds[pick_both] = np.minimum(x1[pick_both], x2[pick_both])
     else:
         raise ValueError(f"Invalid model_type: {model_type}")
 
@@ -135,11 +205,26 @@ def get_superscript(num: int) -> str:
            "6":"⁶","7":"⁷","8":"⁸","9":"⁹"}
     return ''.join(sup[c] for c in str(num))
 def get_equation_string(coeffs, model_type):
+    if model_type == 'poly2':
+        # Preserve small coefficients (common for x^2 term) by using
+        # significant-figure formatting instead of coarse rounding.
+        a0, a1, a2 = (float(coeffs[0]), float(coeffs[1]), float(coeffs[2]))
+
+        def fmt(v: float) -> str:
+            if v == 0.0:
+                return "0"
+            # Use up to 6 significant digits; switch to scientific for very small/large.
+            return f"{v:.6g}"
+
+        return f"{fmt(a0)} + {fmt(a1)}x + {fmt(a2)}x{get_superscript(2)}"
+
     terms = []
     for index, coef in enumerate(coeffs):
-        rounded = round(coef, 3)
-        if abs(rounded) < 1e-6:  # Skip near-zero terms
+        # Keep backward-compatible formatting, but avoid deciding "near-zero"
+        # based on the rounded value.
+        if abs(float(coef)) < 1e-12:
             continue
+        rounded = round(float(coef), 3)
         if index == 0:
             terms.append(f"{rounded}")
         elif index == 1:
