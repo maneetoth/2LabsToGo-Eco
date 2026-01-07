@@ -3113,7 +3113,7 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
             <thead>
               <tr>
                 <th>Unknown Track</th>
-                <th>Peak Height</th>
+                {/* <th>Peak Height</th> */}
                 <th>Predicted Concentration</th>
               </tr>
             </thead>
@@ -3121,11 +3121,11 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               {(calibrationResult as any).predictions.concentrations.map((conc: number, idx: number) => (
                 <tr key={idx}>
                   <td>{`TRACK ${unknownIndices[idx] + 1}`}</td>
-                  <td>
+                  {/* <td>
                     {Array.isArray(unknown_peaks) && unknown_peaks[idx] !== undefined
                       ? unknown_peaks[idx].toFixed(4)
                       : "-"}
-                  </td>
+                  </td> */}
                   <td>{Number(conc).toFixed(4)}</td>
                 </tr>
               ))}
