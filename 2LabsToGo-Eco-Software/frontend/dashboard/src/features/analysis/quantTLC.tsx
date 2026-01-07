@@ -141,6 +141,7 @@ const [apiPeakParams, setApiPeakParams] = useState<PeakDetectionApiParams>({
   peak_Min_peak_area: null,
   find_area: true,
   change_area: [],
+  edit_peak_integration: [],
 });
 const [apiPeaksResponse, setApiPeaksResponse] = useState<PeakDetectionApiResponse | null>(null);
 const [apiPeaksLoading, setApiPeaksLoading] = useState(false);
@@ -721,13 +722,25 @@ const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) 
     new_end: changeInfo.newEnd,
   };
 
+  // Accumulate changes so subsequent edits don't revert earlier ones.
+  // Identity: (band_key, channel_name, peak_index)
+  const prevChangeAreas = apiPeakParams.change_area ?? [];
+  const changeKey = (c: ChangeAreaItem) => `${c.band_key}::${c.channel_name}::${c.peak_index}`;
+  const nextChangeAreas: ChangeAreaItem[] = (() => {
+    const key = changeKey(changeAreaItem);
+    const deduped = prevChangeAreas.filter((c: ChangeAreaItem) => changeKey(c) !== key);
+    return [...deduped, changeAreaItem];
+  })();
+
+  setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, change_area: nextChangeAreas }));
+
   // Update params with the change_area and call API
   setApiPeaksLoading(true);
   try {
     const requestBody = {
       params: {
         ...apiPeakParams,
-        change_area: [changeAreaItem], // Send only this change for now
+        change_area: nextChangeAreas,
       },
       processed_data: preprocessedData,
     };
@@ -775,12 +788,24 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
     editItem.new_end = editInfo.newEnd;
   }
 
+  // Accumulate edit_peak_integration items so updates to multiple peaks persist.
+  // Identity: (band_key, channel_name, peak_x)
+  const prevEdits = apiPeakParams.edit_peak_integration ?? [];
+  const editKey = (e: any) => `${e.band_key}::${e.channel_name}::${e.peak_x}`;
+  const nextEdits = (() => {
+    const key = editKey(editItem);
+    const deduped = prevEdits.filter((e: any) => editKey(e) !== key);
+    return [...deduped, editItem];
+  })();
+
+  setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: nextEdits }));
+
   setApiPeaksLoading(true);
   try {
     const requestBody = {
       params: {
         ...apiPeakParams,
-        edit_peak_integration: [editItem],
+        edit_peak_integration: nextEdits,
       },
       processed_data: preprocessedData,
     };
@@ -827,17 +852,28 @@ const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => 
     edit_type: 'add',
     band_key: batchInfo.bandKey,
     channel_name: batchInfo.channelName,
-    peak_index: peak.peakX,
+    peak_x: peak.peakX,
     new_start: peak.newStart,
     new_end: peak.newEnd,
   }));
 
   setApiPeaksLoading(true);
   try {
+    const prevEdits = apiPeakParams.edit_peak_integration ?? [];
+    const editKey = (e: any) => `${e.band_key}::${e.channel_name}::${e.peak_x}`;
+    const mergedEdits = [...prevEdits];
+    for (const item of editItems) {
+      const key = editKey(item);
+      const idx = mergedEdits.findIndex((e: any) => editKey(e) === key);
+      if (idx >= 0) mergedEdits[idx] = item;
+      else mergedEdits.push(item);
+    }
+    setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits }));
+
     const requestBody = {
       params: {
         ...apiPeakParams,
-        edit_peak_integration: editItems, // Send all new peaks in one request
+        edit_peak_integration: mergedEdits,
       },
       processed_data: preprocessedData,
     };
@@ -891,17 +927,28 @@ const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
         edit_type: 'add',
         band_key: String(bandStep),
         channel_name: region.channelName,
-        peak_index: region.peakX,
+        peak_x: region.peakX,
         new_start: Math.round(region.x0),
         new_end: Math.round(region.x1),
       }));
       
       setApiPeaksLoading(true);
       try {
+        const prevEdits = apiPeakParams.edit_peak_integration ?? [];
+        const editKey = (e: any) => `${e.band_key}::${e.channel_name}::${e.peak_x}`;
+        const mergedEdits = [...prevEdits];
+        for (const item of editItems) {
+          const key = editKey(item);
+          const idx = mergedEdits.findIndex((e: any) => editKey(e) === key);
+          if (idx >= 0) mergedEdits[idx] = item;
+          else mergedEdits.push(item);
+        }
+        setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits }));
+
         const requestBody = {
           params: {
             ...apiPeakParams,
-            edit_peak_integration: editItems, // Send all new peaks from all channels
+            edit_peak_integration: mergedEdits,
           },
           processed_data: preprocessedData,
         };

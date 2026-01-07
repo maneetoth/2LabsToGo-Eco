@@ -2,7 +2,7 @@
  * Types for Peak Detection API Request and Response
  */
 
-export type ChannelName = 'red' | 'green' | 'blue' | 'grayscale';
+export type ChannelName = "red" | "green" | "blue" | "grayscale";
 
 // Single peak info returned by API
 export interface ApiPeakInfo {
@@ -36,6 +36,17 @@ export interface ChangeAreaItem {
   new_end: number;
 }
 
+export type EditPeakIntegrationType = "add" | "update" | "delete";
+
+export interface EditPeakIntegrationItem {
+  edit_type: EditPeakIntegrationType;
+  band_key: string;
+  channel_name: string;
+  peak_x: number;
+  new_start?: number;
+  new_end?: number;
+}
+
 // Request body for peak detection API
 export interface PeakDetectionApiParams {
   min_peak_height: number | null;
@@ -49,6 +60,7 @@ export interface PeakDetectionApiParams {
   peak_Min_peak_area: number | null;
   find_area: boolean;
   change_area: ChangeAreaItem[];
+  edit_peak_integration: EditPeakIntegrationItem[];
 }
 
 export interface PeakDetectionApiRequest {
@@ -99,7 +111,12 @@ export function transformApiPeaksToChartPeaks(
       grayscale: [],
     };
 
-    for (const channel of ['red', 'green', 'blue', 'grayscale'] as ChannelName[]) {
+    for (const channel of [
+      "red",
+      "green",
+      "blue",
+      "grayscale",
+    ] as ChannelName[]) {
       const channelPeaks = trackData[channel];
       if (!channelPeaks) continue;
 
