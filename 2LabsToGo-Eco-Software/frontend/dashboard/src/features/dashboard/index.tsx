@@ -39,7 +39,7 @@ const Dashboard: React.FC = () => {
         band_spacing_mm: "10.5",
         num_bands: "17",
         // dynamically computed; always non-negative
-        estimated_band_width_mm: "0.0",
+        estimated_band_width_mm: "6",
     });
     // Track if user manually overrides the auto band width
     const [manualBandWidthOverride, setManualBandWidthOverride] = useState(false);
@@ -433,7 +433,7 @@ useEffect(() => {
                                 </label>
                             )}
                             {!manualBandWidthOverride && (
-                                <p className="text-xs text-neutral-500 mt-1">Auto-calculated. Change value to override.</p>
+                                <p className="text-xs text-neutral-500 mt-1">Change value to override.</p>
                             )}
                         </div>
                     </form>

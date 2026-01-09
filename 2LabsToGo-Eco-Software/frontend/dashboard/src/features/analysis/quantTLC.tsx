@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import IndividualLineChart from "@/components/charts/IndividualLineChart";
 import D3InteractiveChart, { D3InteractiveChartHandle, PeakAreaChangeInfo, EditPeakIntegrationInfo, BatchAddPeaksInfo } from "@/components/charts/peak-linechart";
@@ -84,6 +84,7 @@ const QuantTLC: React.FC = () => {
         : [...prev, channel]
     );
   };
+    const router = useRouter();
     const searchParams = useSearchParams();
     const imageUrl = searchParams.get("image"); // Get the image URL from search params
 const dispatch = useDispatch<AppDispatch>()
@@ -143,6 +144,8 @@ const [apiPeakParams, setApiPeakParams] = useState<PeakDetectionApiParams>({
   change_area: [],
   edit_peak_integration: [],
 });
+// Optional upper bound for min_peak_height range
+const [maxPeakHeight, setMaxPeakHeight] = useState<number | null>(null);
 const [apiPeaksResponse, setApiPeaksResponse] = useState<PeakDetectionApiResponse | null>(null);
 const [apiPeaksLoading, setApiPeaksLoading] = useState(false);
 const [preprocessLoading, setPreprocessLoading] = useState(false);
@@ -424,6 +427,40 @@ const handleSaveAdvancedOptions = async () => {
 
 const { data, loading, error } = useSelector((state: RootState) => state.data)    
 console.log('data',data );
+// Safely normalize densitogram data (can be object or JSON string)
+const bandData = useMemo(() => {
+  const raw = data?.densitogram_data;
+  if (!raw) return null;
+
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      console.error('[quantTLC] Failed to parse densitogram_data JSON', e);
+      return null;
+    }
+  }
+
+  return raw;
+}, [data?.densitogram_data]);
+
+// Redirect to dashboard if densitogram data is not available after loading
+useEffect(() => {
+  if (loading) return;
+  if (error || !bandData) {
+    router.replace('/next/dashboard');
+  }
+}, [loading, error, bandData, router]);
+
+// While redirecting (or if band data is missing), avoid touching data.densitogram_data
+if (!loading && (error || !bandData)) {
+  return (
+    <div className="flex flex-col items-center justify-center py-12">
+      <span className="loading loading-spinner loading-lg"></span>
+      <p className="mt-2 text-gray-600">Redirecting to dashboard…</p>
+    </div>
+  );
+}
  // Ensure hook always runs; internal conditional sets state only when data is ready
  useEffect(() => {
   if (!loading && !error && data?.densitogram_data) {
@@ -591,17 +628,9 @@ function getPeakQuantity(
 // }, [data]); 
 
 
+  console.log("BAND", bandData);
 
-
-
-
-     const bandData = typeof data.densitogram_data === 'string' 
-    ? JSON.parse(data.densitogram_data) 
-    : data.densitogram_data;
-    
-    console.log("BAND",bandData);
-
-    const totalTracks = Object.keys(bandData).length;
+  const totalTracks = Object.keys(bandData as any).length;
 
     const preprocessingSteps = ["Baseline Correction", "Smoothing", "Inverse Peak"];
 
@@ -644,7 +673,7 @@ type BandsResponse = Record<string, BandEntry>; // keys: "1","2","3",...
 // const totalTracks = Object.keys(data).length;
 // const data: BandsResponse = ... (your API response)
 
-const currentEntry: BandEntry | undefined = data.densitogram_data?.[String(bandStep)];
+const currentEntry: BandEntry | undefined = (bandData as BandsResponse)?.[String(bandStep)];
 const imgSrc = currentEntry ? toDataUrl(currentEntry.band_image, "image/png") : "";
 const markedImg = data.marked_image ? toDataUrl(data.marked_image, "image/png") : "";  
 
@@ -672,6 +701,31 @@ const handlePreProcess = async () => {
   }
 };
 
+// Build API params ensuring min_peak_height can be either a number or a [min,max] range
+const buildApiPeakParamsForRequest = useCallback(
+  (overrides: Partial<PeakDetectionApiParams> = {}) => {
+    const merged: PeakDetectionApiParams = { ...apiPeakParams, ...overrides };
+
+    const min =
+      typeof merged.min_peak_height === 'number' && Number.isFinite(merged.min_peak_height)
+        ? merged.min_peak_height
+        : null;
+    const max = typeof maxPeakHeight === 'number' && Number.isFinite(maxPeakHeight) ? maxPeakHeight : null;
+
+    const min_peak_height =
+      min !== null && max !== null
+        ? ([Math.min(min, max), Math.max(min, max)] as [number, number])
+        : min;
+
+    return {
+      ...merged,
+      // backend accepts either number or [min,max]
+      min_peak_height,
+    } as any;
+  },
+  [apiPeakParams, maxPeakHeight]
+);
+
 // API call to fetch peaks from server
 const fetchPeaksFromApi = useCallback(async () => {
   if (!preprocessedData) {
@@ -682,7 +736,7 @@ const fetchPeaksFromApi = useCallback(async () => {
   setApiPeaksLoading(true);
   try {
     const requestBody = {
-      params: apiPeakParams,
+      params: buildApiPeakParamsForRequest(),
       processed_data: preprocessedData,
     };
 
@@ -702,7 +756,7 @@ const fetchPeaksFromApi = useCallback(async () => {
   } finally {
     setApiPeaksLoading(false);
   }
-}, [preprocessedData, apiPeakParams, notify]);
+}, [preprocessedData, buildApiPeakParamsForRequest, notify]);
 
 // Handler for peak area changes from the chart component
 const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) => {
@@ -739,7 +793,7 @@ const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) 
   try {
     const requestBody = {
       params: {
-        ...apiPeakParams,
+        ...buildApiPeakParamsForRequest({ change_area: nextChangeAreas }),
         change_area: nextChangeAreas,
       },
       processed_data: preprocessedData,
@@ -803,10 +857,7 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
   setApiPeaksLoading(true);
   try {
     const requestBody = {
-      params: {
-        ...apiPeakParams,
-        edit_peak_integration: nextEdits,
-      },
+      params: buildApiPeakParamsForRequest({ edit_peak_integration: nextEdits }),
       processed_data: preprocessedData,
     };
 
@@ -831,7 +882,7 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
   } finally {
     setApiPeaksLoading(false);
   }
-}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse]);
+}, [preprocessedData, apiPeakParams, buildApiPeakParamsForRequest, notify, mergeApiPeaksResponse]);
 
 // Handler for batch adding multiple peaks at once
 const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => {
@@ -871,10 +922,7 @@ const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => 
     setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits }));
 
     const requestBody = {
-      params: {
-        ...apiPeakParams,
-        edit_peak_integration: mergedEdits,
-      },
+      params: buildApiPeakParamsForRequest({ edit_peak_integration: mergedEdits }),
       processed_data: preprocessedData,
     };
 
@@ -897,7 +945,7 @@ const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => 
   } finally {
     setApiPeaksLoading(false);
   }
-}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse]);
+}, [preprocessedData, apiPeakParams, buildApiPeakParamsForRequest, notify, mergeApiPeaksResponse]);
 
 // Cross-channel add peak mode state
 const [globalAddPeakMode, setGlobalAddPeakMode] = useState(false);
@@ -946,10 +994,7 @@ const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
         setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits }));
 
         const requestBody = {
-          params: {
-            ...apiPeakParams,
-            edit_peak_integration: mergedEdits,
-          },
+          params: buildApiPeakParamsForRequest({ edit_peak_integration: mergedEdits }),
           processed_data: preprocessedData,
         };
 
@@ -979,7 +1024,7 @@ const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
   }
   
   setGlobalAddPeakMode(isAddMode);
-}, [preprocessedData, bandStep, apiPeakParams, notify, mergeApiPeaksResponse]);
+}, [preprocessedData, bandStep, apiPeakParams, buildApiPeakParamsForRequest, notify, mergeApiPeaksResponse]);
 
 // Automatically fetch peaks when preprocessed data changes
 useEffect(() => {
@@ -2422,95 +2467,135 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
               </button>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                 <div>
                     <label className="block text-sm font-medium text-gray-700">
                         Min Peak Height
                     </label>
-                    <input
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
                         type="number"
                         step="0.01"
                         className="w-full border rounded p-2"
+                        placeholder="Min"
                         value={apiPeakParams.min_peak_height ?? ''}
-                        onChange={(e) =>
-                          setApiPeakParams(prev => ({ ...prev, min_peak_height: parseFloat(e.target.value) || 0 }))
-                        }
-                    />
-                </div>
-
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                        Peak Prominence
-                    </label>
-                    <input
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setApiPeakParams(prev => ({
+                            ...prev,
+                            min_peak_height: v === '' ? null : parseFloat(v),
+                          }));
+                        }}
+                      />
+                      <input
                         type="number"
                         step="0.01"
                         className="w-full border rounded p-2"
-                        value={apiPeakParams.peak_prominence ?? ''}
-                        onChange={(e) =>
-                          setApiPeakParams(prev => ({ ...prev, peak_prominence: parseFloat(e.target.value) || 0 }))
-                        }
-                    />
+                        placeholder="Max (optional)"
+                        value={maxPeakHeight ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setMaxPeakHeight(v === '' ? null : parseFloat(v));
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-neutral-500 mt-1">
+                      Leave max empty to send only min.
+                    </p>
                 </div>
 
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                        Distance Between Peaks
-                    </label>
-                    <input
-                        type="number"
-                        className="w-full border rounded p-2"
-                        value={apiPeakParams.distance_bw_peaks ?? ''}
-                        onChange={(e) =>
-                          setApiPeakParams(prev => ({ ...prev, distance_bw_peaks: parseInt(e.target.value) || 1 }))
-                        }
-                    />
-                </div>
-
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                        Min Peak Area
-                    </label>
-                    <input
-                        type="number"
-                        step="0.1"
-                        className="w-full border rounded p-2"
-                        value={apiPeakParams.peak_Min_peak_area ?? ''}
-                        onChange={(e) =>
-                          setApiPeakParams(prev => ({ ...prev, peak_Min_peak_area: parseFloat(e.target.value) || 0 }))
-                        }
-                    />
-                </div>
-
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                        Peak Width
-                    </label>
-                    <input
-                        type="number"
-                        className="w-full border rounded p-2"
-                        value={apiPeakParams.peak_width ?? ''}
-                        onChange={(e) =>
-                          setApiPeakParams(prev => ({ ...prev, peak_width: parseInt(e.target.value) || 1 }))
-                        }
-                    />
-                </div>
-
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                        Peak Threshold
-                    </label>
-                    <input
-                        type="number"
-                        step="0.01"
-                        className="w-full border rounded p-2"
-                        value={apiPeakParams.peak_threshold ?? ''}
-                        onChange={(e) =>
-                          setApiPeakParams(prev => ({ ...prev, peak_threshold: parseFloat(e.target.value) || 0 }))
-                        }
-                    />
+                <div className="md:col-span-2 flex items-end justify-end">
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() =>
+                      (document.getElementById('api_peak_advanced_modal') as HTMLDialogElement | null)?.showModal()
+                    }
+                  >
+                    Advanced
+                  </button>
                 </div>
             </div>
+
+            <dialog id="api_peak_advanced_modal" className="modal">
+              <div className="modal-box max-w-3xl">
+                <form method="dialog">
+                  <button className="btn btn-sm btn-circle btn-ghost absolute right-2 top-2">✕</button>
+                </form>
+                <h3 className="font-bold text-lg mb-4">Advanced Peak Detection (API)</h3>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Peak Prominence</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="w-full border rounded p-2"
+                      value={apiPeakParams.peak_prominence ?? ''}
+                      onChange={(e) =>
+                        setApiPeakParams(prev => ({ ...prev, peak_prominence: parseFloat(e.target.value) || 0 }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Distance Between Peaks</label>
+                    <input
+                      type="number"
+                      className="w-full border rounded p-2"
+                      value={apiPeakParams.distance_bw_peaks ?? ''}
+                      onChange={(e) =>
+                        setApiPeakParams(prev => ({ ...prev, distance_bw_peaks: parseInt(e.target.value) || 1 }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Min Peak Area</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      className="w-full border rounded p-2"
+                      value={apiPeakParams.peak_Min_peak_area ?? ''}
+                      onChange={(e) =>
+                        setApiPeakParams(prev => ({ ...prev, peak_Min_peak_area: parseFloat(e.target.value) || 0 }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Peak Width</label>
+                    <input
+                      type="number"
+                      className="w-full border rounded p-2"
+                      value={apiPeakParams.peak_width ?? ''}
+                      onChange={(e) =>
+                        setApiPeakParams(prev => ({ ...prev, peak_width: parseInt(e.target.value) || 1 }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Peak Threshold</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="w-full border rounded p-2"
+                      value={apiPeakParams.peak_threshold ?? ''}
+                      onChange={(e) =>
+                        setApiPeakParams(prev => ({ ...prev, peak_threshold: parseFloat(e.target.value) || 0 }))
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="modal-action">
+                  <form method="dialog">
+                    <button className="btn">Close</button>
+                  </form>
+                </div>
+              </div>
+            </dialog>
 
             {/* Status indicator */}
             {apiPeaksResponse && (
@@ -2520,7 +2605,7 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
             )}
         </div>
 
-        {/* Legacy Peak Integration Section (Client-side fallback) */}
+        {/* Legacy Peak Integration Section (Client-side fallback)
         <details className="collapse collapse-arrow border rounded-lg shadow-md w-full mb-6">
           <summary className="collapse-title text-sm font-medium text-gray-500">
             Advanced: Client-side Peak Detection (fallback)
@@ -2573,7 +2658,7 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                 </div>
             </div>
           </div>
-        </details>
+        </details> */}
 
         {/* Peak Selection Section */}
         <div className="p-4 border rounded-lg shadow-md w-full mb-6">
@@ -2581,7 +2666,7 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label className="block text-sm font-medium text-gray-700">hRF Range [pixel]</label>
+                    <label className="block text-sm font-medium text-gray-700">hRF Range</label>
                     <input
                         type="number"
                         className="w-full border rounded p-2"
