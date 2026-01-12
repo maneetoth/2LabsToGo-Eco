@@ -26,11 +26,13 @@ from finecontrol.calculations.sampleAppCalc import *
 from connection.forms import OC_LAB
 from .forms import *
 from .models import *
-from .utils.read_image import read_image
 from .utils.band_positions import Extract_band_positions
 from .utils.extract_densitogram import plot_before_preprocessing, densitogram_after_preprocessing
 from .utils.calibration_curve import *
 from .utils.peak_integration import get_peaks_and_area
+from io import BytesIO
+import base64
+
 
 class SampleView(FormView):
     def get(self, request):
@@ -333,35 +335,58 @@ class CalcVolSP(View):
 
 # Qant TLC 
 @api_view(['POST'])
-# why do we use it?
 def read_and_process_image(request):
     """
     API to read and process an image.
     Expects an image file in the request.
     """
+    if not request:
+        return Response({'error': 'Empty request.'}, status=400)
+    
     image_file = request.FILES.get('image')
+
     if not image_file:
-        return Response({'error': 'No image file provided'}, status=400)
-    image = read_image(image_file, height=None, normalize=False, ls_format=False, plot=False, grayscale=False)
+        # allow base64 in JSON under 'image' key
+        image_str = request.data.get('image') if request.data else None
+        if not image_str:
+            return Response({'error': 'No image provided. Send multipart file under "image" or base64 string under "image" in JSON.'}, status=400)
+        image_input = image_str
+    else:
+        image_input = image_file
+
+    try:
+        image = read_image(image_input, height=None, normalize=False, ls_format=False, plot=False, grayscale=False)
+    except Exception as e:
+        return Response({'error': 'Error processing image', 'details': str(e)}, status=400)
+
     return Response({'message': 'Image processed successfully'})
 
+from .utils.read_image import read_image
 @api_view(['POST'])
 def Raw_densitogram(request):
     """
     API to extract band positions from the image.
     Expects an image file and parameters in the request.
     """
+    # Basic request validation
+    if not request:
+        return JsonResponse({'error': 'Empty request.'}, status=400)
+
     # Get the uploaded image file
     image_file = request.FILES.get('image')
+
     if not image_file:
-        return JsonResponse({'error': 'No image file provided'}, status=400)
+        return JsonResponse({'error': 'No image file provided. Upload as multipart file under "image".'}, status=400)
     try:
-        image = read_image(image_file)  # numpy array with the shape of (1058, 4715, 3)
+        image = read_image(image_file)
     except Exception as e:
         return JsonResponse({'error': f'Error opening image: {str(e)}'}, status=400)
+
     # Get the parameters from the request body
     params = request.data
-    real_width_mm = params.get('real_width_mm') # string
+    if not params:
+        return JsonResponse({'error': 'No parameters provided.'}, status=400)
+    real_width_mm = params.get('real_width_mm') 
     real_height_mm = params.get('real_height_mm')
     crop_bottom_mm = params.get('crop_bottom_mm')
     crop_top_mm = params.get('crop_top_mm')
@@ -370,50 +395,44 @@ def Raw_densitogram(request):
     num_bands = params.get('num_bands')
     estimated_band_width_mm = params.get('estimated_band_width_mm', None)
     try:
-        estimated_band_width_mm= float(estimated_band_width_mm)
-    except:
-        estimated_band_width_mm=None
+        estimated_band_width_mm = float(estimated_band_width_mm) if estimated_band_width_mm is not None else None
+    except Exception:
+        return JsonResponse({'error': 'estimated_band_width_mm must be a number if provided.'}, status=400)
+
     # Validate that all required parameters are provided
     required_params = [
         'real_width_mm', 'real_height_mm', 'crop_bottom_mm', 'crop_top_mm',
-        'first_band_mm', 'band_spacing_mm', 'num_bands', 'estimated_band_width_mm'
+        'first_band_mm', 'band_spacing_mm', 'num_bands'
     ]
     missing_params = [param for param in required_params if params.get(param) is None]
     if missing_params:
         return Response({'error': f'Missing parameters: {", ".join(missing_params)}'}, status=400)
     # Process the image to extract bands
-    analyzer = Extract_band_positions(image)
-    processed_image = analyzer.process_image(
-        real_width_mm=float(real_width_mm),
-        real_height_mm=float(real_height_mm),
-        crop_bottom_mm=float(crop_bottom_mm),
-        crop_top_mm=float(crop_top_mm),
-        first_band_mm=float(first_band_mm),
-        band_spacing_mm=float(band_spacing_mm),
-        num_bands=float(num_bands),
-        estimated_band_width_mm=estimated_band_width_mm
-    )
-    hauteur_val = 100
-    Zf_val = 60
-    dist_bas_val = 16
-    band_data = analyzer.get_band_data_by_number()
-    # ALWAYS skip preprocessing (regardless of request content)
-    # print('*' * 50)
-    # print(band_data[10])
-    # # (550, 148, 3)
-    # print('*' * 50)
-    raw_data = plot_before_preprocessing(
-        band_data,
-        return_json=True
-    )
+    try:
+        analyzer = Extract_band_positions(image)
+        processed_image = analyzer.process_image(
+            real_width_mm=float(real_width_mm),
+            real_height_mm=float(real_height_mm),
+            crop_bottom_mm=float(crop_bottom_mm),
+            crop_top_mm=float(crop_top_mm),
+            first_band_mm=float(first_band_mm),
+            band_spacing_mm=float(band_spacing_mm),
+            num_bands=float(num_bands),
+            estimated_band_width_mm=estimated_band_width_mm
+        )
+        band_data = analyzer.get_band_data_by_number()
+        raw_data = plot_before_preprocessing(
+            band_data,
+            return_json=True
+        )
+    except Exception as e:
+        return JsonResponse({type(e).__name__: "unable to process Image please provide correct values"}, status=400)
 
     # Convert NumPy array to PIL Image if needed
     if isinstance(processed_image, np.ndarray):  
         processed_image = Image.fromarray(processed_image)
 
     # Save image to BytesIO buffer as PNG
-    from io import BytesIO
-    import base64
 
 
     buffer = BytesIO()
@@ -421,15 +440,6 @@ def Raw_densitogram(request):
     buffer.seek(0)
     # Encode image as base64 string
     img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    # Now you can return it in your API response
-    # data = json.loads(raw_data)
-    
-    # print('data:', len(data['17']['red']), len(data['1']['blue']),len(data['10']['green']))
-    # image=data['1']['band_image']
-    # return JsonResponse({
-    #     "marked_image": image
-    # })
-
 
     return JsonResponse({
         "marked_image": img_base64,
@@ -443,39 +453,101 @@ def Processed_densitogram(request):
     API endpoint to process densitogram data after applying preprocessing steps.
     Accepts JSON data with densitogram and preprocessing options.
     """
+    input_data = request.data
+
     try:
-        # Get input data from the request body (assuming it is JSON)
-        input_data = request.data
-        # Extract densitogram data, preprocessing steps, and options from the request
         densitogram_data = input_data.get('densitogram_data')
+        if densitogram_data is None:
+            return JsonResponse({"error": "Missing required field: densitogram_data."}, status=400)
+
         if isinstance(densitogram_data, str):
-            densitogram_data = json.loads(densitogram_data)
-        # order of preprocessing
-        preprocess_order = input_data.get('preprocess_order', [])
-        if len(preprocess_order)==0:
-            return JsonResponse({"processed_data": input_data}, safe=False)
+            try:
+                densitogram_data = json.loads(densitogram_data)
+            except json.JSONDecodeError as e:
+                return JsonResponse({"error": "densitogram_data is not valid JSON.", "details": str(e)}, status=400)
+
+        preprocess_order = input_data.get('preprocess_order', None)
+        if preprocess_order is None:
+            return JsonResponse({"error": "Missing required field: preprocess_order."}, status=400)
+
         if isinstance(preprocess_order, str):
-            preprocess_order = json.loads(preprocess_order)
-        # parameters for preprocessing
+            try:
+                preprocess_order = json.loads(preprocess_order)
+            except json.JSONDecodeError as e:
+                return JsonResponse({"error": "preprocess_order is not valid JSON.", "details": str(e)}, status=400)
+
         preprocess_option = input_data.get('preprocess_option', {})
         if isinstance(preprocess_option, str):
-            preprocess_option = json.loads(preprocess_option)
-        if not densitogram_data or not preprocess_order:
-            return JsonResponse({"error": "Missing required fields"}, status=400)
-        # Process the densitogram data
-        processed_data = densitogram_after_preprocessing(densitogram_data, preprocess_order, preprocess_option)
-        if isinstance(processed_data, str):
-            processed_data= json.loads(processed_data)
-        # Return the processed data as a JSON response
-        return JsonResponse({"processed_data": processed_data}, safe=False)
+            try:
+                preprocess_option = json.loads(preprocess_option)
+            except json.JSONDecodeError as e:
+                return JsonResponse({"error": "preprocess_option is not valid JSON.", "details": str(e)}, status=400)
+
+        if not isinstance(preprocess_order, (list, tuple)) or len(preprocess_order) == 0:
+            return JsonResponse({"error": "preprocess_order must be a non-empty list."}, status=400)
+
     except Exception as e:
-        return JsonResponse({"error": str(e), "preprocess_option": preprocess_order}, status=500)
+        # Any unexpected error while loading inputs
+        return JsonResponse({"error": "Failed to load input data", "details": str(e)}, status=400)
+
+    # 2) Process the densitogram data (may raise errors)
+    try:
+        processed_data = densitogram_after_preprocessing(densitogram_data, preprocess_order, preprocess_option)
+    except (TypeError, ValueError) as e:
+        # Likely caused by incorrect input types/values
+        return JsonResponse({"error": "Processing failed due to invalid input or parameters", "details": str(e)}, status=400)
+    except Exception as e:
+        # Unexpected error during processing
+        return JsonResponse({"error": "Internal processing error", "details": str(e)}, status=500)
+
+    # If processing returned a JSON string, try to parse it; otherwise leave as-is
+    if isinstance(processed_data, str):
+        try:
+            processed_data = json.loads(processed_data)
+        except json.JSONDecodeError:
+            pass
+
+    return JsonResponse({"processed_data": processed_data}, safe=False)
     
 @api_view(['POST'])
 def peak_integration(request):
     input_data = request.data
-    data = input_data.get("processed_data", {})
-    params = input_data.get("params", {})
+
+    # Basic presence validation
+    if not input_data:
+        return JsonResponse({"error": "No input data provided."}, status=400)
+
+    if "processed_data" not in input_data:
+        return JsonResponse({"error": "Missing required field: processed_data."}, status=400)
+    if "params" not in input_data:
+        return JsonResponse({"error": "Missing required field: params."}, status=400)
+
+    # Extract and coerce types (allow JSON strings)
+    data = input_data.get("processed_data")
+    params = input_data.get("params")
+
+    # If the client sent JSON strings, try to parse them
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError as e:
+            return JsonResponse({"error": "processed_data is not valid JSON.", "details": str(e)}, status=400)
+        except Exception as e:
+            return JsonResponse({"error": "Unexpected error parsing processed_data.", "details": str(e)}, status=500)
+
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except json.JSONDecodeError as e:
+            return JsonResponse({"error": "params is not valid JSON.", "details": str(e)}, status=400)
+        except Exception as e:
+            return JsonResponse({"error": "Unexpected error parsing params.", "details": str(e)}, status=500)
+
+    # Validate non-empty structures
+    if not data or not isinstance(data, dict):
+        return JsonResponse({"error": "processed_data is empty or not an object."}, status=400)
+    if not isinstance(params, dict):
+        return JsonResponse({"error": "params must be an object/dict."}, status=400)
 
     # ------------------------
     # 1. Peak detection params
@@ -501,30 +573,37 @@ def peak_integration(request):
     # ------------------------
     # 3. Automatic peak detection
     # ------------------------
-    for band_key, band in data.items():
-        band_dict[band_key] = {}
-        for channel_name, channel_data in band.items():
-            if channel_name not in ["red", "green", "blue", "grayscale"]:
-                continue
+    try:
+        for band_key, band in data.items():
+            band_dict[band_key] = {}
+            for channel_name, channel_data in band.items():
+                if channel_name not in ["red", "green", "blue", "grayscale"]:
+                    continue
 
-            band_peaks = get_peaks_and_area(
-                channel_data,
-                height=min_peak_height,
-                threshold=peak_threshold,
-                distance=distance_bw_peaks,
-                prominence=peak_prominence,
-                width=peak_width,
-                wlen=peak_wlen,
-                rel_height=peak_el_height,
-                plateau_size=peak_plateau_size,
-                Min_peak_area=peak_Min_peak_area,
-                find_area=find_area
-            )
+                try:
+                    band_peaks = get_peaks_and_area(
+                        channel_data,
+                        height=min_peak_height,
+                        threshold=peak_threshold,
+                        distance=distance_bw_peaks,
+                        prominence=peak_prominence,
+                        width=peak_width,
+                        wlen=peak_wlen,
+                        rel_height=peak_el_height,
+                        plateau_size=peak_plateau_size,
+                        Min_peak_area=peak_Min_peak_area,
+                        find_area=find_area
+                    )
+                except Exception as e:
+                    # If peak detection fails for this channel, return an error indicating which band/channel failed
+                    return JsonResponse({"error": "Peak detection failed", "band": band_key, "channel": channel_name, "details": str(e)}, status=400)
 
-            # Convert keys to peak_x for consistency
-            band_dict[band_key][channel_name] = {
-                v["peak_x"]: v for k, v in band_peaks.items()
-            }
+                # Convert keys to peak_x for consistency
+                band_dict[band_key][channel_name] = {
+                    v["peak_x"]: v for k, v in band_peaks.items()
+                }
+    except Exception as e:
+        return JsonResponse({"error": "Failed during peak detection processing", "details": str(e)}, status=500)
 
     # ------------------------
     # 4. Apply manual edits
@@ -578,9 +657,13 @@ def peak_integration(request):
         # ------------------------
         # Compute area and peak height if not provided
         # ------------------------
-        area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
-        if manual_peak_height is None:
-            manual_peak_height = float(x[new_start:new_end].max())
+        try:
+            area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
+            if manual_peak_height is None:
+                manual_peak_height = float(x[new_start:new_end].max())
+        except Exception as e:
+            # Skip this edit if bounds/indices are invalid or computation fails
+            continue
 
         # ------------------------
         # UPDATE
@@ -644,7 +727,7 @@ def calibrate(request):
     known_peaks   = data.get('known_peaks')
     unknown_peaks = data.get('unknown_peaks')
     model_type    = data.get('model_type', 'hill')
-
+    
     # Validate inputs
     if not (isinstance(known_conc, list) and isinstance(known_peaks, list)):
         return Response({'error': 'known_conc and known_peaks must be lists.'}, status=400)
@@ -652,9 +735,13 @@ def calibrate(request):
         return Response({'error': 'known_conc and known_peaks must be same length.'}, status=400)
     if not isinstance(unknown_peaks, list):
         return Response({'error': 'unknown_peaks must be a list.'}, status=400)
-    # Fit the model
+    try:
 
-    data=calibrate_and_predict(known_conc, known_peaks,unknown_peaks,model_type=model_type)
+        data=calibrate_and_predict(known_conc, known_peaks,unknown_peaks,
+        model_type=model_type)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
     return JsonResponse(data)
 
 

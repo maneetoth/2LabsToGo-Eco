@@ -31,6 +31,7 @@ import {
   AllTracksChartPeaks,
   ChartPeak,
   ChangeAreaItem,
+  EditPeakIntegrationItem,
   transformApiPeaksToChartPeaks,
   getChannelPeaks,
 } from "@/types/peakApi";
@@ -635,7 +636,7 @@ const calibrateImg = useMemo(() => {
 }, [calibrationResult]);
 console.log('calibrateImg', calibrateImg);
 // --- Types (optional but nice)
-type ChannelName = "red" | "green" | "blue" | "grayscale";
+// Use the imported `ChannelName` from utils/peakDetection (avoid redeclaring)
 type BandEntry = Record<ChannelName, number[]> & { band_image: string };
 type BandsResponse = Record<string, BandEntry>; // keys: "1","2","3",...
 
@@ -775,8 +776,8 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
   console.log('Edit peak integration:', editInfo);
 
   // Build the edit_peak_integration item for API
-  const editItem: Record<string, any> = {
-    edit_type: editInfo.editType,
+  const editItem: EditPeakIntegrationItem = {
+    edit_type: editInfo.editType as any,
     band_key: editInfo.bandKey,
     channel_name: editInfo.channelName,
     peak_x: editInfo.peakIndex,
@@ -792,9 +793,9 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
   // Identity: (band_key, channel_name, peak_x)
   const prevEdits = apiPeakParams.edit_peak_integration ?? [];
   const editKey = (e: any) => `${e.band_key}::${e.channel_name}::${e.peak_x}`;
-  const nextEdits = (() => {
+  const nextEdits: EditPeakIntegrationItem[] = (() => {
     const key = editKey(editItem);
-    const deduped = prevEdits.filter((e: any) => editKey(e) !== key);
+    const deduped = (prevEdits as EditPeakIntegrationItem[]).filter((e: EditPeakIntegrationItem) => editKey(e) !== key);
     return [...deduped, editItem];
   })();
 
@@ -848,7 +849,7 @@ const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => 
   console.log('Batch add peaks:', batchInfo);
 
   // Build array of edit_peak_integration items for all new peaks
-  const editItems = batchInfo.newPeaks.map(peak => ({
+  const editItems: EditPeakIntegrationItem[] = batchInfo.newPeaks.map(peak => ({
     edit_type: 'add',
     band_key: batchInfo.bandKey,
     channel_name: batchInfo.channelName,
@@ -868,7 +869,7 @@ const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => 
       if (idx >= 0) mergedEdits[idx] = item;
       else mergedEdits.push(item);
     }
-    setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits }));
+    setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits as EditPeakIntegrationItem[] }));
 
     const requestBody = {
       params: {
@@ -923,7 +924,7 @@ const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
     
     if (allRegions.length > 0 && preprocessedData && bandStep !== undefined) {
       // Group regions by channel
-      const editItems = allRegions.map(region => ({
+      const editItems: EditPeakIntegrationItem[] = allRegions.map(region => ({
         edit_type: 'add',
         band_key: String(bandStep),
         channel_name: region.channelName,
@@ -943,7 +944,7 @@ const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
           if (idx >= 0) mergedEdits[idx] = item;
           else mergedEdits.push(item);
         }
-        setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits }));
+        setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits as EditPeakIntegrationItem[] }));
 
         const requestBody = {
           params: {

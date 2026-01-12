@@ -125,6 +125,7 @@ def predict_concentration(peak_values, consts, model_type='hill'):
         xh = (y[valid] * kd) / denom
         preds[valid] = np.power(xh, 1.0 / h)
         preds[y <= 0] = 0.0
+
     elif model_type == 'mm_origin':
         vmax, km = consts
         valid = (y >= 0) & (y < vmax)
@@ -196,7 +197,7 @@ def predict_concentration(peak_values, consts, model_type='hill'):
                 preds[pick_both] = np.minimum(x1[pick_both], x2[pick_both])
     else:
         raise ValueError(f"Invalid model_type: {model_type}")
-
+    print("+"*100)
     return preds
 
 # 4. Equation formatting
@@ -307,7 +308,7 @@ def calibrate_and_predict(
     if len(preds_list) > 0:
         sns.scatterplot(x=preds_list, y=unknown_valid, color='green', marker='X', s=100, label='Predicted')
     plt.xlabel('Concentration')
-    plt.ylabel('Peak Area')
+    plt.ylabel('Peak area/height')
     plt.title('Calibration Curve')
     plt.grid(True)
     plt.legend()
