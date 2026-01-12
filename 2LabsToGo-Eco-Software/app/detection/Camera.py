@@ -5,10 +5,15 @@ import re
 import glob
 import pytz         #Import Timezone Library
 from connection.forms import OC_LAB
-from picamera2 import Picamera2, Metadata
+try:
+    from picamera2 import Picamera2, Metadata
+    import libcamera
+    from libcamera import controls
+
+    PICAMERA_AVAILABLE = True
+except ImportError:
+    PICAMERA_AVAILABLE = False
 import time
-import libcamera
-from libcamera import controls
 
 tz = pytz.timezone('Europe/Berlin') #Setting Timezone for Berlin
 

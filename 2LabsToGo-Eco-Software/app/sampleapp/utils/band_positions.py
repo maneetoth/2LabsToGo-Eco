@@ -100,8 +100,7 @@ class Extract_band_positions:
             draw.rectangle([(start, 0), (end, img_pil.height)], outline="green", width=2)
             # Draw red dashed center line
             draw.line([(center, 0), (center, img_pil.height)], fill="red", width=2)
-            # Note: PIL.ImageDraw does not support dashed lines directly.
-            # If you want a dashed effect, you would need to implement it manually.
+   
 
         self.band_centers = band_centers_px
         self.band_starts = band_starts_px
