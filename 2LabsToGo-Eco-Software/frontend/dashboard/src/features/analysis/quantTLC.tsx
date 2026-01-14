@@ -43,6 +43,8 @@ import axios from "axios";
 import { log } from "console";
 
 
+import autoTable from "jspdf-autotable";
+
 export const preprocessingOptions = [
   { label: "Peak Inversion", labelShort: "Peak Inversion", value: "NegativePeakInversion" },
   { label: "Baseline", labelShort: "Baseline", value: "baseline" },
@@ -1571,124 +1573,128 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
 };
 const handleDownloadReport = async () => {
   const doc = new jsPDF();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 10;
-  const maxWidth = 180;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 15;
+  const accentColor = [41, 128, 185]; // Professional Blue
   let y = margin;
 
-  const checkAddPage = (lineHeight = 6) => {
-    if (y + lineHeight >= pageHeight - margin) {
-      doc.addPage();
-      y = margin;
-    }
+  // --- Helper: Header Bar ---
+  const drawHeader = () => {
+    doc.setFillColor(...accentColor);
+    doc.rect(0, 0, pageWidth, 25, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(20);
+    doc.setFont("helvetica", "bold");
+    doc.text("QUANT TLC ANALYSIS REPORT", margin, 17);
+    
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, pageWidth - margin - 40, 17);
+    y = 35;
   };
 
-  const addSectionTitle = (title:string) => {
-    doc.setFontSize(14);
-    checkAddPage();
-    doc.text(title, margin, y);
-    y += 8;
-  };
-
-  const addText = (text:string, indent = 0) => {
+  // --- Helper: Section Title ---
+  const addSectionHeader = (title: string) => {
     doc.setFontSize(12);
-    const lines = doc.splitTextToSize(text, maxWidth - indent);
-    lines.forEach((line: string) => {
-      checkAddPage();
-      doc.text(line, margin + indent, y);
-      y += 6;
-    });
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...accentColor);
+    doc.text(title.toUpperCase(), margin, y);
+    doc.setLineWidth(0.5);
+    doc.setDrawColor(...accentColor);
+    doc.line(margin, y + 2, pageWidth - margin, y + 2);
+    y += 10;
   };
 
-  // Section 1: Inputs & Images
-  doc.setFontSize(18);
-  doc.text("Quant TLC Report", margin, y);
+  drawHeader();
+
+  // --- SECTION 1: OVERVIEW & IMAGES ---
+  addSectionHeader("Step 1: Experiment Overview");
+  doc.setTextColor(50, 50, 50);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.text(`Total Tracks: ${totalTracks}`, margin, y);
+  doc.text(`Analysis Mode: ${bandStep}`, margin + 60, y);
   y += 10;
 
-  addSectionTitle("Step 1: Inputs");
-  addText(`Number of Tracks: ${totalTracks}`);
-  addText(`Current Track: ${bandStep}`);
+  // Images Row
+  const imgWidth = (pageWidth - (margin * 3)) / 2;
+  const imgHeight = 50;
 
-  // Add main image
   if (markedImg) {
-    try {
-      checkAddPage(40);
-      doc.addImage(markedImg, "JPEG", margin, y, 60, 40);
-    } catch {
-      addText("Image could not be loaded.");
-    }
+    doc.addImage(markedImg, "JPEG", margin, y, imgWidth, imgHeight);
+    doc.setFontSize(8);
+    doc.text("Marked TLC Plate", margin, y + imgHeight + 5);
   }
-
-  // Add densitogram image
   if (imgSrc) {
-    try {
-      checkAddPage(40);
-      doc.addImage(imgSrc, margin + 70, y, 60, 40);
-    } catch {
-      doc.text("Densitogram image could not be loaded.", margin + 70, y + 10);
-    }
+    doc.addImage(imgSrc, "JPEG", margin + imgWidth + 5, y, imgWidth, imgHeight);
+    doc.text("Densitogram Analysis", margin + imgWidth + 5, y + imgHeight + 5);
   }
+  y += imgHeight + 15;
 
-  y += 50;
+  // --- SECTION 2: PREPROCESSING ---
+  addSectionHeader("Step 2: Preprocessing Configuration");
+  const prep = selectedPreprocessing.length > 0 ? selectedPreprocessing.join(", ") : "Standard (None)";
+  doc.setFont("helvetica", "italic");
+  doc.text(`Applied Filters: ${prep}`, margin, y);
+  y += 10;
 
-  // Section 2: Preprocessing
-  addSectionTitle("Step 2: Preprocessing Steps Used");
-  const preprocessingText = selectedPreprocessing.length > 0
-    ? selectedPreprocessing.join(", ")
-    : "None";
-  addText(preprocessingText);
+  // --- SECTION 3: STANDARDS TABLE ---
+  addSectionHeader("Step 3: Track Metadata & Standards");
+  const standardRows = Array.from({ length: totalTracks }).map((_, i) => [
+    `Track ${i + 1}`,
+    selectedStandards[`band-${i}`] ? "YES" : "NO",
+    quantityValues[i] ?? "N/A"
+  ]);
 
-  // Section 3: Standards
-  addSectionTitle("Step 3: Selected Standards");
-  Array.from({ length: totalTracks }).forEach((_, i) => {
-    const line = `Track ${i + 1} | Selected: ${selectedStandards[`band-${i}`] ? "Yes" : "No"} | Quantity: ${quantityValues[i] ?? "-"}`;
-    addText(line);
+  autoTable(doc, {
+    startY: y,
+    head: [['Track ID', 'Is Standard', 'Assigned Quantity']],
+    body: standardRows,
+    theme: 'striped',
+    headStyles: { fillColor: accentColor },
+    margin: { left: margin, right: margin }
   });
+  
+  y = (doc as any).lastAutoTable.finalY + 15;
 
-  // Section 4: Calibration
-  addSectionTitle("Step 4: Calibration");
-  addText(`Known Peaks: ${known_peaks.join(", ")}`);
-  addText(`Known Concentrations: ${known_conc.join(", ")}`);
-
+  // --- SECTION 4: CALIBRATION ---
+  if (y > 220) { doc.addPage(); y = 25; } // Simple page break check
+  addSectionHeader("Step 4: Calibration Curve");
+  
   if (calibrationResult?.predictions?.equation) {
-    addText(`Calibration Equation: ${calibrationResult.predictions.equation}`);
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "bold");
+    doc.text(`Equation: ${calibrationResult.predictions.equation}`, margin, y);
+    y += 8;
   }
 
   if (calibrateImg) {
-    try {
-    
-      checkAddPage(50);
-      doc.addImage(calibrateImg, margin, y, 80, 50);
-      y += 55;
-    } catch {
-      addText("Calibration curve image could not be loaded.");
-    }
+    doc.addImage(calibrateImg, "JPEG", margin, y, 100, 60);
+    y += 70;
   }
 
-  // Section 5: Selected Peak
-  addSectionTitle("Step 5: Selected Peak");
-  if (selectedPeak?.channel && selectedPeak?.peak) {
-    addText(`Channel: ${selectedPeak.channel}, hRF: ${selectedPeak.peak.x}, Height: ${selectedPeak.peak.y}`);
-  } else {
-    addText("No peak selected.");
-  }
-
-  // Section 6: Predicted Concentrations
-  addSectionTitle("Step 6: Predicted Concentrations for Unknown Peaks");
-
+  // --- SECTION 5: FINAL RESULTS ---
+  addSectionHeader("Step 5: Predicted Concentrations (Unknowns)");
+  
   if (Array.isArray(calibrationResult?.predictions?.concentrations)) {
-    calibrationResult.predictions.concentrations.forEach((conc, idx) => {
-      const y = unknown_peaks[idx];
-      const peakHeight = typeof y === "number" ? y.toFixed(4) : "-";
-      addText(`Track ${unknownIndexList[idx] + 1}: Peak Height = ${peakHeight}, Predicted Concentration = ${Number(conc).toFixed(4)}`);
+    const resultRows = calibrationResult.predictions.concentrations.map((conc, idx) => [
+        `Track ${unknownIndexList[idx] + 1}`,
+        typeof unknown_peaks[idx] === "number" ? unknown_peaks[idx].toFixed(4) : "-",
+        Number(conc).toFixed(4)
+    ]);
+
+    autoTable(doc, {
+      startY: y,
+      head: [['Sample Source', 'Peak Height', 'Predicted Concentration']],
+      body: resultRows,
+      theme: 'grid',
+      headStyles: { fillColor: [39, 174, 96] }, // Green for results
     });
   } else {
-    addText("No predicted concentrations available.");
+    doc.text("No unknowns identified for prediction.", margin, y);
   }
 
-  doc.save("QuantTLC_Report.pdf");
-  console.log('docs report');
-  
+  doc.save(`TLC_Report_${new Date().getTime()}.pdf`);
 };
 
 function getFirstPeakFromRef(
