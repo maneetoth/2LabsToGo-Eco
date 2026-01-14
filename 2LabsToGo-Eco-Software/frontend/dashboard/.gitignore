@@ -43,3 +43,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Python bytecode
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Django specific (if you are using Django)
+*.log
+local_settings.py
+db.sqlite3

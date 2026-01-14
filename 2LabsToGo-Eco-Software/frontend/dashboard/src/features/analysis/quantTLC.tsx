@@ -230,6 +230,7 @@ const [advancedOptions, setAdvancedOptions] = useState({
     seg_len: '',       // for PTW
   },
 });
+console.log("advanced options ", advancedOptions);
 
   type QuantFormData = {
     real_width_mm: string;
@@ -371,6 +372,24 @@ const buildPreprocessOption = () => {
   const baselineType = advancedOptions.baseline.type;
   const baselineParams = advancedOptions.baseline.params || {};
 
+  // ---- Smoothing ----
+  // Backend expects: preprocess_option['Smoothing'] = {'window.size': int, 'poly.order': int, 'diff.order': int}
+  const smoothingWindow = coerce(advancedOptions.smoothing.windowSize);
+  const smoothingPoly = coerce(advancedOptions.smoothing.polynomialOrder);
+  const smoothingDiff =
+    advancedOptions.smoothing.differentiationOrder === ''
+      ? 0
+      : (coerce(advancedOptions.smoothing.differentiationOrder) ?? 0);
+
+  const Smoothing: Record<string, any> | null =
+    smoothingWindow === null || smoothingPoly === null
+      ? null
+      : {
+          'window.size': smoothingWindow,
+          'poly.order': smoothingPoly,
+          'diff.order': smoothingDiff,
+        };
+
   // For PEAK_DETECTION we want the flat structure shown in your example:
   // {"baseline": {"type": "peakDetection","left": 10, ...}}
   // For others we’ll still send the same shape: { type: "<mapped>", ...params }
@@ -398,12 +417,14 @@ const buildPreprocessOption = () => {
   return {
     baseline,
     Warping, // note capital W to match your example exactly
+    ...(Smoothing ? { Smoothing } : {}),
   };
 };
 
 const handleSaveAdvancedOptions = async () => {
   try {
-    const preprocessOrder = selectedPreprocessing;
+    // Normalize to backend step names
+    const preprocessOrder = selectedPreprocessing.map((v: PreprocessValue) => (v === 'smoothing' ? 'Smoothing' : v));
 
     const preprocessOption = buildPreprocessOption();
 
@@ -1945,70 +1966,6 @@ const handleGetSelectedPeak = () => {
     }
   }
 
-  // const getIdx = (k: string) => parseInt(k.replace("band-", ""), 10);
-
-  //     // Known concentrations: always use the quantity entered by user in the field
-  //     const known_conc_local = selectedKeys
-  //       .map((k) => autoPeakValues[getIdx(k)])
-  //       .filter((v): v is number => Number.isFinite(v));
-  //        // Debug: log the selected standards and their values
-      
-  //     // Known peaks: use either area or height based on quantityMetric
-  //     // quantityValues already contains the correct metric from recalcQuantityValues
-  //     const known_peaks_local = selectedKeys
-  //       .map((k) => quantityValues[getIdx(k)])
-  //       .filter((v): v is number => Number.isFinite(v));
-
-  //     const allIdx = Array.from({ length: totalTracks }, (_, i) => i);
-  //     const unknownIdx = allIdx.filter((i) => !selectedKeys.includes(`band-${i}`));
-
-  //     // Unknown peaks: use quantityValues (area or height based on metric) for non-standard tracks
-  //     const unknown_peaks_local = unknownIdx
-  //       .map((i) => quantityValues[i])
-  //       .filter((v): v is number => Number.isFinite(v));
-
-  //     console.log('=== CALIBRATION DATA ===');
-  //     console.log('Selected Standards Keys:', selectedKeys);
-  //     console.log('autoPeakValues (user-entered concentrations):', autoPeakValues);
-  //     console.log('quantityValues (peak metric - height or area):', quantityValues);
-  //     console.log('Current quantityMetric:', quantityMetric);
-
-  //     const payload = {
-  //       known_conc: known_conc_local,
-  //       known_peaks: known_peaks_local,
-  //       unknown_peaks: unknown_peaks_local,
-  //       model_type: modelType,
-  //     };
-
-  //     // Log calibration data for debugging
-  //     console.log('Calibration Payload:', {
-  //       quantityMetric,
-  //       known_conc: known_conc_local,
-  //       known_peaks: known_peaks_local,
-  //       unknown_peaks: unknown_peaks_local,
-  //       model_type: modelType
-  //     });
-
-  //     // Always hit the API, even if arrays are empty (backend should validate)
-  //     (async () => {
-  //       try {
-  //         const { data } = await axios.post(
-  //           "http://localhost/calibrate/",
-  //           payload,
-  //           { headers: { "Content-Type": "application/json" }, timeout: 15000 }
-  //         );
-  //         setCalibrationResult(data);
-  //         console.log("Calibrate API response:", data);
-  //         notify('success', 'Calibration completed.');;
-  //       } catch (err: unknown) {
-  //         console.error("Calibrate API error:", err);
-  //         const msg =
-  //           axios.isAxiosError(err) ? err.message :
-  //           err instanceof Error ? err.message : '';
-  //         notify('error', `Calibration failed${msg ? `: ${msg}` : ''}`);
-  //       }
-  //     })();
-  // --- end calibrate ---
 
   // Save snapshot
   prevSelectedPeakRef.current = clone(curr);
@@ -2455,8 +2412,11 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
 
 
+        {/* Peak Detection + Peak Selection (side-by-side) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full mb-6">
+
         {/* Peak Integration Section - API-based */}
-        <div className="p-4 border rounded-lg shadow-md w-full mb-6">
+        <div className="p-4 border rounded-lg shadow-md w-full">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg font-semibold text-gray-700">Peak Detection (API)</h2>
               <button 
@@ -2662,7 +2622,7 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
         </details> */}
 
         {/* Peak Selection Section */}
-        <div className="p-4 border rounded-lg shadow-md w-full mb-6">
+        <div className="p-4 border rounded-lg shadow-md w-full">
             <h2 className="text-lg font-semibold text-gray-700 mb-4">Peak Selection</h2>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2678,6 +2638,8 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                 </div>
             </div>
         </div>
+
+          </div>
 
          <h2 className="text-xl font-semibold text-center mb-6">Integration & Stats</h2>
 
