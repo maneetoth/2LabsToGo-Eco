@@ -57,6 +57,329 @@ const preprocessingLabelByValue: Record<PreprocessValue, string> =
     acc[o.value] = o.label;
     return acc;
   }, {} as Record<PreprocessValue, string>);
+
+type HelpParam = { info: string; type?: string; constraint?: string; typical?: string };
+type HelpEntry = {
+  purpose: string;
+  parameters?: Record<string, HelpParam>;
+  constraints?: string[];
+  reference_url?: string | string[];
+};
+
+const ADVANCED_PREPROCESS_HELP = {
+  "Peak.Integration": {
+    purpose:
+      "Locates peaks using SciPy and calculates their area by integrating between slope-defined boundaries.",
+    parameters: {
+      distance: {
+        type: "int",
+        info: "Minimum horizontal distance (in samples) between neighboring peaks.",
+        typical: "30",
+      },
+      height: {
+        type: "float/array",
+        info: "Minimum required height of peaks.",
+      },
+      prominence: {
+        type: "float/array",
+        info: "Minimum required prominence of peaks.",
+      },
+      width: {
+        type: "float/array",
+        info: "Minimum required width of peaks.",
+      },
+      rel_height: {
+        type: "float",
+        info: "Relative height at which the peak width is measured.",
+        typical: "0.5",
+      },
+      Min_peak_area: {
+        type: "float",
+        info: "Threshold to filter out peaks with a calculated area smaller than this value.",
+      },
+      find_area: {
+        type: "bool",
+        info: "Enable/disable area calculation under each peak.",
+      },
+    },
+    constraints: [
+      "Peak detection relies on the SciPy find_peaks algorithm.",
+      "Boundaries for integration are found by moving outward from the peak index until slope changes sign.",
+      "Area is calculated using the trapezoidal rule (numpy.trapz).",
+    ],
+    reference_url: [
+      "https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.find_peaks.html",
+      "https://numpy.org/doc/1.25/reference/generated/numpy.trapz.html",
+    ],
+  } satisfies HelpEntry,
+
+  "Calibration.Models": {
+    purpose:
+      "Select the model used to fit the calibration curve (standards vs response).\n\nModels:\n- hill: Hill Equation (https://en.wikipedia.org/wiki/Hill_equation_(biochemistry))\n- mm_origin: Michaelis–Menten Kinetics (https://en.wikipedia.org/wiki/Michaelis%E2%80%93Menten_kinetics)\n- mm_intercept: Michaelis–Menten Kinetics (https://en.wikipedia.org/wiki/Michaelis%E2%80%93Menten_kinetics)\n- linear: Simple Linear Regression (https://en.wikipedia.org/wiki/Simple_linear_regression)\n- linear_origin: Simple Linear Regression (https://en.wikipedia.org/wiki/Simple_linear_regression)\n- poly2: Polynomial Regression (https://en.wikipedia.org/wiki/Polynomial_regression)",
+  } satisfies HelpEntry,
+
+  Smoothing: {
+    purpose:
+      "Savitzky–Golay filter reduce noise while preserving peak shape; fits a local polynomial in a moving window (row-wise per channel).",
+    parameters: {
+      "window.size": {
+        info: "larger = more smoothing; smaller = more detail",
+        type: "int (odd)",
+        constraint: "must be odd and > poly.order",
+      },
+      "poly.order": {
+        info: "degree of local fit; higher tracks curvature, may overfit",
+        type: "int",
+      },
+      "diff.order": {
+        info: "derivatives amplify noise; use a larger window",
+        type: "int",
+      },
+    },
+    constraints: [
+      "window.size must be odd and strictly greater than poly.order",
+      "row length must be >= window.size",
+    ],
+    reference_url: "https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.savgol_filter.html",
+  } satisfies HelpEntry,
+
+  "Warping.PTW": {
+    purpose:
+      "Polynomial Time Warping aligns signals to a template via a polynomial time map (optionally per segment).",
+    parameters: {
+      ptw: {
+        type: "int",
+        info: "index of the template (reference band) used for alignment",
+      },
+      degree: {
+        type: "int >= 1",
+        typical: "1–3",
+        info: "polynomial degree of the time mapping; higher = more flexible",
+      },
+      seg_len: {
+        type: "int or null",
+        typical: "None or 50–200",
+        info: "segment length for piecewise warping; None uses whole signal",
+      },
+    },
+    constraints: [
+      "signals must be numeric and comparable to the template",
+      "seg_len must be > 0 if provided",
+      "effective degree per segment ≤ segment_length - 1",
+    ],
+    reference_url: [
+      "https://cran.r-project.org/web/packages/ptw/index.html",
+      "https://numpy.org/doc/stable/reference/generated/numpy.polynomial.polynomial.Polynomial.html",
+    ],
+  } satisfies HelpEntry,
+
+  "Warping.DTW": {
+    purpose:
+      "Dynamic Time Warping elastically aligns sequences to a template by minimizing cumulative distance under a warping path.",
+    parameters: {
+      dtw: {
+        type: "int",
+        info: "index of the template (reference band) used for alignment",
+      },
+    },
+    constraints: [
+      "signals must be numeric and non-empty",
+      "DTW can be slow for very long sequences; consider downsampling",
+    ],
+    reference_url: [
+      "https://dtaidistance.readthedocs.io/en/latest/usage/dtw.html",
+      "https://en.wikipedia.org/wiki/Dynamic_time_warping",
+    ],
+  } satisfies HelpEntry,
+
+  "Baseline.ASLS": {
+    purpose:
+      "Asymmetric Least Squares (AsLS) smoothing for baseline estimation using Whittaker-style penalties to ignore peaks.",
+    parameters: {
+      lam: {
+        type: "float/log",
+        info: "Smoothness penalty (10^lam). Higher values result in a smoother baseline.",
+      },
+      p: {
+        type: "float (0 to 1)",
+        info: "Asymmetry parameter. Lower values (e.g., 0.01) keep the baseline below peaks.",
+      },
+      max_iter: {
+        type: "int",
+        info: "Maximum number of iterations for the algorithm to converge.",
+      },
+    },
+    constraints: ["lam is converted from log scale internally: 10 ** lam"],
+    reference_url:
+      "https://pybaselines.readthedocs.io/en/latest/algorithms/whittaker.html#asls-asymmetric-least-squares",
+  } satisfies HelpEntry,
+
+  "Baseline.IRLS": {
+    purpose:
+      "Robust Iteratively Reweighted Least Squares for Whittaker-based baseline estimation, helpful for signals with high noise.",
+    parameters: {
+      lam: {
+        type: "float/log",
+        info: "Smoothness penalty (10^lam).",
+      },
+      wi: {
+        type: "float",
+        info: "Small weight assigned to points identified as peaks.",
+      },
+      diff_order: {
+        type: "int",
+        info: "Order of the finite difference penalty (typically 2).",
+      },
+      trim_ends: {
+        type: "int",
+        info: "Number of points at signal ends to down-weight to prevent edge artifacts.",
+      },
+    },
+    reference_url: "https://pybaselines.readthedocs.io/en/stable/algorithms/whittaker.html",
+  } satisfies HelpEntry,
+
+  "Baseline.MODPOLY": {
+    purpose:
+      "Improved Modified Multi-polynomial fit (IModPoly) that iteratively fits a polynomial to the signal baseline.",
+    parameters: {
+      degree: {
+        type: "int",
+        info: "The degree of the polynomial to be fitted.",
+      },
+      tol: {
+        type: "float",
+        info: "Convergence tolerance.",
+      },
+      max_iter: {
+        type: "int",
+        info: "Maximum number of iterations.",
+      },
+    },
+    reference_url:
+      "https://pybaselines.readthedocs.io/en/stable/generated/api/functional/pybaselines.polynomial.imodpoly.html",
+  } satisfies HelpEntry,
+
+  "Baseline.FILLPEAKS": {
+    purpose:
+      "A morphological-Whittaker hybrid that iteratively fills peak regions to estimate the baseline.",
+    parameters: {
+      lambda: { type: "float/log", info: "10^lambda smoothness penalty." },
+      hwi: { type: "int", info: "Half-window size for rolling mean statistics." },
+      it: { type: "int", info: "Number of iterations." },
+      int: { type: "int", info: "Number of buckets (segments) for mean estimation." },
+    },
+    reference_url: "https://rdrr.io/cran/baseline/man/baseline.fillPeaks.html",
+  } satisfies HelpEntry,
+
+  "Baseline.MEDIAN_WINDOW": {
+    purpose:
+      "Calculates a baseline using a running median filter, optionally followed by Gaussian smoothing.",
+    parameters: {
+      k_size: {
+        type: "int",
+        info: "Half-width for local medians (window size ≈ 2*k_size + 1).",
+      },
+      hws: { type: "float", info: "Half-width for optional Gaussian smoothing." },
+      end: {
+        type: "bool",
+        info: "If true, uses asymmetric windows at endpoints instead of reflection padding.",
+      },
+    },
+    reference_url: "https://rdrr.io/cran/baseline/man/baseline.medianWindow.html",
+  } satisfies HelpEntry,
+
+  "Baseline.ROLLING_BALL": {
+    purpose:
+      "Morphological baseline estimation that uses a rolling ball to follow the signal's lower envelope.",
+    parameters: {
+      half_window: { type: "int", info: "Radius of the ball (in points)." },
+      smooth_half_window: {
+        type: "int",
+        info: "Window size for smoothing the signal before ball processing.",
+      },
+    },
+    reference_url:
+      "https://pybaselines.readthedocs.io/en/stable/generated/api/functional/pybaselines.morphological.rolling_ball.html",
+  } satisfies HelpEntry,
+
+  "Baseline.LOWPASS": {
+    purpose:
+      "Estimates the baseline using a Low-Pass FFT filter to remove high-frequency peaks.",
+    parameters: {
+      steep: { type: "float", info: "Steepness of the filter cutoff." },
+      half: { type: "float", info: "Frequency (0–100) where filter response is 0.5." },
+    },
+    reference_url: "https://docs.scipy.org/doc/scipy/reference/generated/scipy.fft.rfft.html",
+  } satisfies HelpEntry,
+
+  "Baseline.PEAK_DETECTION": {
+    purpose:
+      "Custom peak-detection baseline method (valley-to-valley suppression) inspired by baseline.peakDetection.",
+    parameters: {
+      left: { type: "int", info: "Minimum valley-to-peak half-width (points)." },
+      right: { type: "int", info: "Maximum valley-to-peak half-width (points)." },
+      snminimum: { type: "float", info: "Signal-to-noise threshold to retain peaks." },
+    },
+    reference_url: "https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.find_peaks.html",
+  } satisfies HelpEntry,
+} as const;
+
+function InfoTip({
+  tip,
+  direction = "bottom",
+}: {
+  tip: string;
+  direction?: "bottom" | "top" | "left" | "right";
+}) {
+  const dirClass =
+    direction === "top"
+      ? "dropdown-top"
+      : direction === "left"
+        ? "dropdown-left"
+        : direction === "right"
+          ? "dropdown-right"
+          : "dropdown-bottom";
+
+  // Use a dropdown instead of tooltip pseudo-elements to avoid being clipped by the dialog.
+  return (
+    <div className={`dropdown dropdown-hover ${dirClass}`}>
+      <button
+        type="button"
+        tabIndex={0}
+        className="btn btn-xs btn-circle btn-ghost"
+        aria-label="More info"
+      >
+        i
+      </button>
+      <div
+        tabIndex={0}
+        className="dropdown-content z-[9999] card card-compact w-80 bg-base-100 shadow p-3 text-sm whitespace-pre-line max-h-60 overflow-auto"
+      >
+        {tip}
+      </div>
+    </div>
+  );
+}
+
+function formatHelpTip(entry?: HelpEntry, paramKey?: string): string {
+  if (!entry) return "";
+  const parts: string[] = [];
+  if (entry.purpose) parts.push(entry.purpose);
+  if (paramKey && entry.parameters?.[paramKey]) {
+    const p = entry.parameters[paramKey];
+    const meta = [p.type ? `Type: ${p.type}` : "", p.typical ? `Typical: ${p.typical}` : "", p.constraint ? `Constraint: ${p.constraint}` : ""]
+      .filter(Boolean)
+      .join(" | ");
+    parts.push(`${paramKey}: ${p.info}${meta ? ` (${meta})` : ""}`);
+  }
+  if (entry.constraints?.length) parts.push(`Constraints: ${entry.constraints.join("; ")}`);
+  if (entry.reference_url) {
+    const refs = Array.isArray(entry.reference_url) ? entry.reference_url : [entry.reference_url];
+    parts.push(`Docs: ${refs.join(" ")}`);
+  }
+  // Newlines keep the card readable and prevent extreme horizontal overflow.
+  return parts.join("\n\n");
+}
   type CalibrationPredictions = {
     equation?: string;
     concentrations?: number[];
@@ -2188,50 +2511,85 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
     {/* Smoothing Section */}
     <div className="mb-6">
-      <h4 className="font-semibold">Smoothing</h4>
-      <div className="grid grid-cols-2 gap-4 mt-2">
-        <input
-          type="number"
-          placeholder="Size of window"
-          className="input input-bordered w-full"
-          value={advancedOptions.smoothing.windowSize}
-          onChange={(e) =>
-            setAdvancedOptions(prev => ({
-              ...prev,
-              smoothing: { ...prev.smoothing, windowSize: e.target.value }
-            }))
-          }
-        />
-        <input
-          type="number"
-          placeholder="Polynomial order"
-          className="input input-bordered w-full"
-          value={advancedOptions.smoothing.polynomialOrder}
-          onChange={(e) =>
-            setAdvancedOptions(prev => ({
-              ...prev,
-              smoothing: { ...prev.smoothing, polynomialOrder: e.target.value }
-            }))
-          }
-        />
-        <input
-          type="number"
-          placeholder="Differentiation order"
-          className="input input-bordered w-full"
-          value={advancedOptions.smoothing.differentiationOrder}
-          onChange={(e) =>
-            setAdvancedOptions(prev => ({
-              ...prev,
-              smoothing: { ...prev.smoothing, differentiationOrder: e.target.value }
-            }))
-          }
-        />
+      <div className="flex items-center gap-2">
+        <h4 className="font-semibold">Smoothing</h4>
+        <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP.Smoothing)} direction="bottom" />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-gray-700">window.size</span>
+            <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP.Smoothing, 'window.size')} direction="bottom" />
+          </div>
+          <input
+            type="number"
+            placeholder="Size of window"
+            className="input input-bordered w-full"
+            value={advancedOptions.smoothing.windowSize}
+            onChange={(e) =>
+              setAdvancedOptions(prev => ({
+                ...prev,
+                smoothing: { ...prev.smoothing, windowSize: e.target.value }
+              }))
+            }
+          />
+        </div>
+
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-gray-700">poly.order</span>
+            <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP.Smoothing, 'poly.order')} direction="bottom" />
+          </div>
+          <input
+            type="number"
+            placeholder="Polynomial order"
+            className="input input-bordered w-full"
+            value={advancedOptions.smoothing.polynomialOrder}
+            onChange={(e) =>
+              setAdvancedOptions(prev => ({
+                ...prev,
+                smoothing: { ...prev.smoothing, polynomialOrder: e.target.value }
+              }))
+            }
+          />
+        </div>
+
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-gray-700">diff.order</span>
+            <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP.Smoothing, 'diff.order')} direction="bottom" />
+          </div>
+          <input
+            type="number"
+            placeholder="Differentiation order"
+            className="input input-bordered w-full"
+            value={advancedOptions.smoothing.differentiationOrder}
+            onChange={(e) =>
+              setAdvancedOptions(prev => ({
+                ...prev,
+                smoothing: { ...prev.smoothing, differentiationOrder: e.target.value }
+              }))
+            }
+          />
+        </div>
       </div>
     </div>
 
     {/* Baseline Section */}
     <div className="mb-6">
-      <h4 className="font-semibold">Baseline</h4>
+      <div className="flex items-center gap-2">
+        <h4 className="font-semibold">Baseline</h4>
+        <InfoTip
+          tip={
+            advancedOptions.baseline.type
+              ? formatHelpTip(
+                  (ADVANCED_PREPROCESS_HELP as any)[`Baseline.${advancedOptions.baseline.type}`] as HelpEntry | undefined
+                )
+              : "Pick a baseline type to see parameter help."
+          }
+          direction="bottom"
+        />
+      </div>
 
       <div className="grid grid-cols-2 gap-4 mt-2">
         <select
@@ -2256,103 +2614,165 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
       {!!advancedOptions.baseline.type && (
         <div className="grid grid-cols-2 gap-4 mt-2">
-          {Object.entries((advancedOptions.baseline as any).params ?? {}).map(([key, val]) => (
-            <input
-              key={key}
-              type="text"
-              placeholder={key}
-              className="input input-bordered w-full"
-              value={val as number}
-              onChange={(e) => handleBaselineParamChange(key, e.target.value)}
-            />
-          ))}
+          {Object.entries((advancedOptions.baseline as any).params ?? {}).map(([key, val]) => {
+            const entry = (ADVANCED_PREPROCESS_HELP as any)[`Baseline.${advancedOptions.baseline.type}`] as HelpEntry | undefined;
+            const tip = entry?.parameters?.[String(key)]
+              ? formatHelpTip(entry, String(key))
+              : entry
+                ? `${entry.purpose} • Param: ${String(key)}`
+                : `Param: ${String(key)}`;
+
+            return (
+              <div key={key} className="flex flex-col">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-medium text-gray-700">{String(key)}</span>
+                  <InfoTip tip={tip} direction="bottom" />
+                </div>
+                <input
+                  type="text"
+                  placeholder={String(key)}
+                  className="input input-bordered w-full"
+                  value={val as number}
+                  onChange={(e) => handleBaselineParamChange(String(key), e.target.value)}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
 
     {/* Warping Section */}
     <div className="mb-6">
-      <h4 className="font-semibold">Warping</h4>
+      <div className="flex items-center gap-2">
+        <h4 className="font-semibold">Warping</h4>
+        <InfoTip
+          tip={
+            advancedOptions.warping.method === 'DTW'
+              ? formatHelpTip(ADVANCED_PREPROCESS_HELP['Warping.DTW'])
+              : advancedOptions.warping.method === 'PTW'
+                ? formatHelpTip(ADVANCED_PREPROCESS_HELP['Warping.PTW'])
+                : 'Select DTW or PTW to see parameter help.'
+          }
+          direction="bottom"
+        />
+      </div>
       <div className="grid grid-cols-2 gap-4 mt-2">
         {/* Warping method dropdown */}
-        <select
-          className="select select-bordered w-full"
-          value={advancedOptions.warping.method}
-          onChange={(e) => handleWarpingMethodChange(e.target.value)}
-        >
-          <option value="">Select warping method</option>
-          <option value="DTW">DTW</option>
-          <option value="PTW">PTW</option>
-        </select>
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-gray-700">Method</span>
+            <InfoTip tip={"DTW aligns by minimizing distance; PTW fits a polynomial time map to a template."} direction="bottom" />
+          </div>
+          <select
+            className="select select-bordered w-full"
+            value={advancedOptions.warping.method}
+            onChange={(e) => handleWarpingMethodChange(e.target.value)}
+          >
+            <option value="">Select warping method</option>
+            <option value="DTW">DTW</option>
+            <option value="PTW">PTW</option>
+          </select>
+        </div>
 
-        <input
-          type="text"
-          placeholder="Track of reference"
-          className="input input-bordered w-full"
-          value={advancedOptions.warping.referenceTrack}
-          onChange={(e) =>
-            setAdvancedOptions(prev => ({
-              ...prev,
-              warping: { ...prev.warping, referenceTrack: e.target.value }
-            }))
-          }
-        />
-
-        {/* DTW-specific field */}
-        {advancedOptions.warping.method === "DTW" && (
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-gray-700">Template/Reference track</span>
+            <InfoTip tip={"Index of the template (reference band) used for alignment."} direction="bottom" />
+          </div>
           <input
-            type="number"
-            placeholder="dtw (e.g., window/step)"
+            type="text"
+            placeholder="Track of reference"
             className="input input-bordered w-full"
-            value={advancedOptions.warping.dtw ?? ""}
+            value={advancedOptions.warping.referenceTrack}
             onChange={(e) =>
               setAdvancedOptions(prev => ({
                 ...prev,
-                warping: { ...prev.warping, dtw: e.target.value }
+                warping: { ...prev.warping, referenceTrack: e.target.value }
               }))
             }
           />
+        </div>
+
+        {/* DTW-specific field */}
+        {advancedOptions.warping.method === "DTW" && (
+          <div className="flex flex-col">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-medium text-gray-700">dtw</span>
+              <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP['Warping.DTW'], 'dtw')} direction="bottom" />
+            </div>
+            <input
+              type="number"
+              placeholder="dtw (template index)"
+              className="input input-bordered w-full"
+              value={advancedOptions.warping.dtw ?? ""}
+              onChange={(e) =>
+                setAdvancedOptions(prev => ({
+                  ...prev,
+                  warping: { ...prev.warping, dtw: e.target.value }
+                }))
+              }
+            />
+          </div>
         )}
 
         {/* PTW-specific fields */}
         {advancedOptions.warping.method === "PTW" && (
           <>
-            <input
-              type="number"
-              placeholder="ptw"
-              className="input input-bordered w-full"
-              value={advancedOptions.warping.ptw ?? ""}
-              onChange={(e) =>
-                setAdvancedOptions(prev => ({
-                  ...prev,
-                  warping: { ...prev.warping, ptw: e.target.value }
-                }))
-              }
-            />
-            <input
-              type="number"
-              placeholder="degree"
-              className="input input-bordered w-full"
-              value={advancedOptions.warping.degree ?? ""}
-              onChange={(e) =>
-                setAdvancedOptions(prev => ({
-                  ...prev,
-                  warping: { ...prev.warping, degree: e.target.value }
-                }))
-              }
-            />
-            <input
-              type="number"
-              placeholder="seg_len"
-              className="input input-bordered w-full"
-              value={advancedOptions.warping.seg_len ?? ""}
-              onChange={(e) =>
-                setAdvancedOptions(prev => ({
-                  ...prev,
-                  warping: { ...prev.warping, seg_len: e.target.value }
-                }))
-              }
-            />
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-medium text-gray-700">ptw</span>
+                <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP['Warping.PTW'], 'ptw')} direction="bottom" />
+              </div>
+              <input
+                type="number"
+                placeholder="ptw (template index)"
+                className="input input-bordered w-full"
+                value={advancedOptions.warping.ptw ?? ""}
+                onChange={(e) =>
+                  setAdvancedOptions(prev => ({
+                    ...prev,
+                    warping: { ...prev.warping, ptw: e.target.value }
+                  }))
+                }
+              />
+            </div>
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-medium text-gray-700">degree</span>
+                <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP['Warping.PTW'], 'degree')} direction="bottom" />
+              </div>
+              <input
+                type="number"
+                placeholder="degree"
+                className="input input-bordered w-full"
+                value={advancedOptions.warping.degree ?? ""}
+                onChange={(e) =>
+                  setAdvancedOptions(prev => ({
+                    ...prev,
+                    warping: { ...prev.warping, degree: e.target.value }
+                  }))
+                }
+              />
+            </div>
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-medium text-gray-700">seg_len</span>
+                <InfoTip tip={formatHelpTip(ADVANCED_PREPROCESS_HELP['Warping.PTW'], 'seg_len')} direction="bottom" />
+              </div>
+              <input
+                type="number"
+                placeholder="seg_len"
+                className="input input-bordered w-full"
+                value={advancedOptions.warping.seg_len ?? ""}
+                onChange={(e) =>
+                  setAdvancedOptions(prev => ({
+                    ...prev,
+                    warping: { ...prev.warping, seg_len: e.target.value }
+                  }))
+                }
+              />
+            </div>
           </>
         )}
       </div>
@@ -2424,7 +2844,13 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
         {/* Peak Integration Section - API-based */}
         <div className="p-4 border rounded-lg shadow-md w-full">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold text-gray-700">Peak Detection (API)</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-gray-700">Peak Detection (API)</h2>
+                <InfoTip
+                  tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry)}
+                  direction="bottom"
+                />
+              </div>
               <button 
                 className={`btn btn-primary btn-sm ${apiPeaksLoading ? 'loading' : ''}`}
                 onClick={fetchPeaksFromApi}
@@ -2436,9 +2862,15 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                 <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <div className="flex items-center gap-2 mb-1">
+                      <label className="block text-sm font-medium text-gray-700">
                         Min Peak Height
-                    </label>
+                      </label>
+                      <InfoTip
+                        tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry, 'height')}
+                        direction="bottom"
+                      />
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <input
                         type="number"
@@ -2489,11 +2921,23 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                 <form method="dialog">
                   <button className="btn btn-sm btn-circle btn-ghost absolute right-2 top-2">✕</button>
                 </form>
-                <h3 className="font-bold text-lg mb-4">Advanced Peak Detection (API)</h3>
+                <div className="flex items-center gap-2 mb-4">
+                  <h3 className="font-bold text-lg">Advanced Peak Detection (API)</h3>
+                  <InfoTip
+                    tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry)}
+                    direction="bottom"
+                  />
+                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Peak Prominence</label>
+                    <div className="flex items-center gap-2 mb-1">
+                      <label className="block text-sm font-medium text-gray-700">Peak Prominence</label>
+                      <InfoTip
+                        tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry, 'prominence')}
+                        direction="bottom"
+                      />
+                    </div>
                     <input
                       type="number"
                       step="0.01"
@@ -2506,7 +2950,13 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Distance Between Peaks</label>
+                    <div className="flex items-center gap-2 mb-1">
+                      <label className="block text-sm font-medium text-gray-700">Distance Between Peaks</label>
+                      <InfoTip
+                        tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry, 'distance')}
+                        direction="bottom"
+                      />
+                    </div>
                     <input
                       type="number"
                       className="w-full border rounded p-2"
@@ -2518,7 +2968,13 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Min Peak Area</label>
+                    <div className="flex items-center gap-2 mb-1">
+                      <label className="block text-sm font-medium text-gray-700">Min Peak Area</label>
+                      <InfoTip
+                        tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry, 'Min_peak_area')}
+                        direction="bottom"
+                      />
+                    </div>
                     <input
                       type="number"
                       step="0.1"
@@ -2531,7 +2987,13 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Peak Width</label>
+                    <div className="flex items-center gap-2 mb-1">
+                      <label className="block text-sm font-medium text-gray-700">Peak Width</label>
+                      <InfoTip
+                        tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry, 'width')}
+                        direction="bottom"
+                      />
+                    </div>
                     <input
                       type="number"
                       className="w-full border rounded p-2"
@@ -2633,7 +3095,15 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label className="block text-sm font-medium text-gray-700">hRF Range</label>
+                    <div className="flex items-center gap-2 mb-1">
+                      <label className="block text-sm font-medium text-gray-700">hRF Range</label>
+                      <InfoTip
+                        tip={
+                          'This value is the hRF matching threshold (tolerance) used when selecting/validating the same peak across tracks. Increase it to match peaks that shift more; decrease it for stricter matching.'
+                        }
+                        direction="bottom"
+                      />
+                    </div>
                     <input
                         type="number"
                         className="w-full border rounded p-2"
@@ -3053,7 +3523,13 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
   {/* Controls */}
   <div className="flex items-center gap-3 mb-3">
     <label className="label">
-      <span className="label-text">Calibration model</span>
+      <span className="label-text flex items-center gap-2">
+        Calibration model
+        <InfoTip
+          tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Calibration.Models"] as HelpEntry)}
+          direction="bottom"
+        />
+      </span>
     </label>
     <select
       className="select select-bordered"
