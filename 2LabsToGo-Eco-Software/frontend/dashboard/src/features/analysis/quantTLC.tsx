@@ -2603,13 +2603,13 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
           ))}
         </select>
 
-        <input
+        {/* <input
           type="text"
           className="input input-bordered w-full"
           value={advancedOptions.baseline.type ? `${advancedOptions.baseline.type} parameters` : ""}
           readOnly
           placeholder="Baseline parameters"
-        />
+        /> */}
       </div>
 
       {!!advancedOptions.baseline.type && (
