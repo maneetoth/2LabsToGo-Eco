@@ -380,6 +380,54 @@ function formatHelpTip(entry?: HelpEntry, paramKey?: string): string {
   // Newlines keep the card readable and prevent extreme horizontal overflow.
   return parts.join("\n\n");
 }
+
+function extractApiErrorPayloadMessage(payload: unknown): string {
+  if (payload == null) return "";
+  if (typeof payload === "string") return payload;
+
+  if (typeof payload === "object") {
+    const p = payload as any;
+    const candidate =
+      p?.detail ??
+      p?.message ??
+      p?.error ??
+      p?.errors ??
+      p?.non_field_errors ??
+      null;
+
+    if (typeof candidate === "string") return candidate;
+    try {
+      return JSON.stringify(candidate ?? payload);
+    } catch {
+      return String(candidate ?? payload);
+    }
+  }
+
+  return String(payload);
+}
+
+function formatNon200AxiosResponse(response: { status: number; statusText?: string; data?: unknown }): string {
+  const statusLabel = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+  const payloadMsg = extractApiErrorPayloadMessage(response.data);
+  return payloadMsg ? `${statusLabel}: ${payloadMsg}` : statusLabel;
+}
+
+function getApiErrorMessage(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    if (err.response) {
+      return formatNon200AxiosResponse({
+        status: err.response.status,
+        statusText: err.response.statusText,
+        data: err.response.data,
+      });
+    }
+    // No response: likely network/CORS/timeout
+    return err.message;
+  }
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
   type CalibrationPredictions = {
     equation?: string;
     concentrations?: number[];
@@ -767,6 +815,7 @@ const handleSaveAdvancedOptions = async () => {
     (document.getElementById('advanced_modal') as HTMLDialogElement)?.close();
   } catch (e) {
     console.error(e);
+    notify('error', `Preprocessing failed: ${getApiErrorMessage(e)}`);
   }
 };
 
@@ -791,23 +840,19 @@ const bandData = useMemo(() => {
   return raw;
 }, [data?.densitogram_data]);
 
-// Redirect to dashboard if densitogram data is not available after loading
+// If the densitogram API fails, do not redirect. Show the error and let the user retry.
 useEffect(() => {
-  if (loading) return;
-  if (error || !bandData) {
-    router.replace('/next/dashboard');
+  if (!loading && error) {
+    notify('error', `Densitogram API failed: ${String(error)}`);
   }
-}, [loading, error, bandData, router]);
+}, [loading, error, notify]);
 
-// While redirecting (or if band data is missing), avoid touching data.densitogram_data
-if (!loading && (error || !bandData)) {
-  return (
-    <div className="flex flex-col items-center justify-center py-12">
-      <span className="loading loading-spinner loading-lg"></span>
-      <p className="mt-2 text-gray-600">Redirecting to dashboard…</p>
-    </div>
-  );
-}
+// Keep the user on Step 1 until we have densitogram data.
+useEffect(() => {
+  if (!loading && !bandData) {
+    setStep(1);
+  }
+}, [loading, bandData]);
  // Ensure hook always runs; internal conditional sets state only when data is ready
  useEffect(() => {
   if (!loading && !error && data?.densitogram_data) {
@@ -977,7 +1022,8 @@ function getPeakQuantity(
 
   console.log("BAND", bandData);
 
-  const totalTracks = Object.keys(bandData as any).length;
+  const totalTracks =
+    bandData && typeof bandData === "object" ? Object.keys(bandData as any).length : 0;
 
     const preprocessingSteps = ["Baseline Correction", "Smoothing", "Inverse Peak"];
 
@@ -1022,7 +1068,7 @@ type BandsResponse = Record<string, BandEntry>; // keys: "1","2","3",...
 
 const currentEntry: BandEntry | undefined = (bandData as BandsResponse)?.[String(bandStep)];
 const imgSrc = currentEntry ? toDataUrl(currentEntry.band_image, "image/png") : "";
-const markedImg = data.marked_image ? toDataUrl(data.marked_image, "image/png") : "";  
+const markedImg = (data as any)?.marked_image ? toDataUrl((data as any).marked_image, "image/png") : "";  
 
 
 
@@ -1043,6 +1089,7 @@ const handlePreProcess = async () => {
     setPreprocessedData(data);
   } catch (e) {
     console.error(e);
+    notify('error', `Preprocessing failed: ${getApiErrorMessage(e)}`);
   } finally {
     setPreprocessLoading(false);
   }
@@ -1093,13 +1140,16 @@ const fetchPeaksFromApi = useCallback(async () => {
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
 
+    if (response.status !== 200) {
+      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
+    }
+
     console.log('Peak Detection API Response:', response.data);
     setApiPeaksResponse(response.data);
     notify('success', 'Peak detection completed.');
   } catch (err) {
     console.error('Peak Detection API error:', err);
-    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
-    notify('error', `Peak detection failed${msg ? `: ${msg}` : ''}`);
+    notify('error', `Peak detection failed: ${getApiErrorMessage(err)}`);
   } finally {
     setApiPeaksLoading(false);
   }
@@ -1154,13 +1204,16 @@ const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) 
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
 
+    if (response.status !== 200) {
+      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
+    }
+
     console.log('Peak Area Change API Response:', response.data);
     mergeApiPeaksResponse(response.data);
     notify('success', 'Peak area updated successfully.');
   } catch (err) {
     console.error('Peak Area Change API error:', err);
-    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
-    notify('error', `Peak area update failed${msg ? `: ${msg}` : ''}`);
+    notify('error', `Peak area update failed: ${getApiErrorMessage(err)}`);
   } finally {
     setApiPeaksLoading(false);
   }
@@ -1216,6 +1269,10 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
 
+    if (response.status !== 200) {
+      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
+    }
+
     console.log('Edit Peak Integration API Response:', response.data);
     mergeApiPeaksResponse(response.data);
     
@@ -1224,8 +1281,7 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
     notify('success', `Peak ${actionLabel} successfully.`);
   } catch (err) {
     console.error('Edit Peak Integration API error:', err);
-    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
-    notify('error', `Peak ${editInfo.editType} failed${msg ? `: ${msg}` : ''}`);
+    notify('error', `Peak ${editInfo.editType} failed: ${getApiErrorMessage(err)}`);
   } finally {
     setApiPeaksLoading(false);
   }
@@ -1281,14 +1337,17 @@ const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => 
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
 
+    if (response.status !== 200) {
+      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
+    }
+
     console.log('Batch Add Peaks API Response:', response.data);
     mergeApiPeaksResponse(response.data);
     
     notify('success', `${batchInfo.newPeaks.length} peak(s) added successfully.`);
   } catch (err) {
     console.error('Batch Add Peaks API error:', err);
-    const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
-    notify('error', `Adding peaks failed${msg ? `: ${msg}` : ''}`);
+    notify('error', `Adding peaks failed: ${getApiErrorMessage(err)}`);
   } finally {
     setApiPeaksLoading(false);
   }
@@ -1353,14 +1412,17 @@ const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
           { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
         );
 
+        if (response.status !== 200) {
+          throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
+        }
+
         console.log('[quantTLC] Cross-channel Batch Add Peaks API Response:', response.data);
         mergeApiPeaksResponse(response.data);
         
         notify('success', `${allRegions.length} peak(s) added across channels successfully.`);
       } catch (err) {
         console.error('[quantTLC] Cross-channel Batch Add Peaks API error:', err);
-        const msg = axios.isAxiosError(err) ? err.message : err instanceof Error ? err.message : '';
-        notify('error', `Adding peaks failed${msg ? `: ${msg}` : ''}`);
+        notify('error', `Adding peaks failed: ${getApiErrorMessage(err)}`);
       } finally {
         setApiPeaksLoading(false);
       }
@@ -1877,7 +1939,17 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
   
     try {
         const resultAction = await dispatch(fetchBandData(uploadFormData));
-        // const response = unwrapResult(resultAction);
+
+        if (fetchBandData.rejected.match(resultAction)) {
+          const msg =
+            extractApiErrorPayloadMessage((resultAction as any).payload) ||
+            (resultAction as any).error?.message ||
+            'Request failed.';
+          notify('error', `Upload failed: ${msg}`);
+          return;
+        }
+
+        notify('success', 'Image processed successfully.');
         console.log("response in quant for new update");
         
   
@@ -1891,7 +1963,8 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
             
         // }
     } catch (error) {
-        console.error('Error uploading image:', error);
+      console.error('Error uploading image:', error);
+      notify('error', `Upload failed: ${getApiErrorMessage(error)}`);
     }
 };
 const handleDownloadReport = async () => {
@@ -2274,20 +2347,26 @@ const handleGetSelectedPeak = () => {
       (async () => {
         setCalibrationLoading(true);
         try {
-          const { data } = await axios.post(
+          const response = await axios.post(
             "http://localhost/calibrate/",
             payload,
             { headers: { "Content-Type": "application/json" }, timeout: 15000 }
           );
-          setCalibrationResult(data);
-          console.log("Calibrate API response:", data);
+
+          if (response.status !== 200) {
+            throw new Error(formatNon200AxiosResponse({
+              status: response.status,
+              statusText: response.statusText,
+              data: response.data,
+            }));
+          }
+
+          setCalibrationResult(response.data);
+          console.log("Calibrate API response:", response.data);
           notify('success', 'Calibration completed.');
         } catch (err: unknown) {
           console.error("Calibrate API error:", err);
-          const msg =
-            axios.isAxiosError(err) ? err.message :
-            err instanceof Error ? err.message : '';
-          notify('error', `Calibration failed${msg ? `: ${msg}` : ''}`);
+          notify('error', `Calibration failed: ${getApiErrorMessage(err)}`);
         } finally {
           setCalibrationLoading(false);
         }
@@ -2329,11 +2408,6 @@ const openSelectStandardModal = () => {
   (document.getElementById("select_standard_modal") as HTMLDialogElement | null)?.showModal();
 };
 
-if (loading) return <span className="loading loading-bars loading-xl"></span>;
-if (error) return <p>Error: {error}</p>;
-if (!data?.densitogram_data) return <p>No densitogram data available</p>
-
-
     return (
         <div className="flex flex-col items-center mt-6 w-full">
            {/* Alerts */}
@@ -2355,7 +2429,23 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
                </div>
              </div>
            )}
-            <h1 className="text-2xl font-bold mb-4">Quant TLC - Densitogram</h1>
+
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-12">
+                <span className="loading loading-spinner loading-lg"></span>
+                <p className="mt-2 text-gray-600">Loading…</p>
+              </div>
+            ) : (
+              <>
+                {!bandData && (
+                  <div className="alert alert-error shadow-sm mb-4 w-[min(90vw,48rem)]">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>No densitogram data loaded. Please correct values and click Apply.</span>
+                  </div>
+                )}
+                <h1 className="text-2xl font-bold mb-4">Quant TLC - Densitogram</h1>
 
             {/* Step Indicator */}
             <ul className="steps steps-vertical lg:steps-horizontal w-full max-w-3xl mb-6">
@@ -2423,8 +2513,8 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
     </button>
   </div>
 </div>
-            </>
-)}
+              </>
+            )}
 {/* Compact Form Section */}
 <form className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 text-sm w-full max-w-5xl" onSubmit={handleQuantTLC}>
   {(
@@ -3696,6 +3786,9 @@ if (!data?.densitogram_data) return <p>No densitogram data available</p>
 
     </div>
 </div>
+
+        </>
+      )}
 
         </div>
     );

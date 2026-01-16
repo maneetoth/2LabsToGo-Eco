@@ -18,6 +18,9 @@ const Dashboard: React.FC = () => {
     const router = useRouter()
     const dispatch = useDispatch<AppDispatch>()
 
+    const [uiAlert, setUiAlert] = useState<{ type: 'warning' | 'error' | 'success'; message: string } | null>(null);
+    const [alertTimer, setAlertTimer] = useState<number | null>(null);
+
     type DashboardFormData = {
         real_width_mm: string;
         real_height_mm: string;
@@ -48,6 +51,51 @@ const Dashboard: React.FC = () => {
     const [preprocessedData, setPreprocessedData] = useState<PreprocessedOutput | null>(null);
     const [bandStep, setBandStep] = useState(1);
     const [isLoading, setIsLoading] = useState(false);
+
+    useEffect(() => {
+        return () => {
+            if (alertTimer) window.clearTimeout(alertTimer);
+        };
+    }, [alertTimer]);
+
+    const notify = (type: 'warning' | 'error' | 'success', message: string) => {
+        setUiAlert({ type, message });
+        if (alertTimer) window.clearTimeout(alertTimer);
+        const t = window.setTimeout(() => setUiAlert(null), 6000) as unknown as number;
+        setAlertTimer(t);
+    };
+
+    function extractApiErrorPayloadMessage(payload: unknown): string {
+        if (payload == null) return '';
+        if (typeof payload === 'string') return payload;
+        if (typeof payload === 'number' || typeof payload === 'boolean') return String(payload);
+        if (payload instanceof Error) return payload.message;
+        if (typeof payload !== 'object') return String(payload);
+
+        const obj = payload as Record<string, any>;
+        const candidates = [obj.detail, obj.message, obj.error, obj.errors, obj.data];
+        for (const c of candidates) {
+            if (c == null) continue;
+            if (typeof c === 'string') return c;
+            try {
+                return JSON.stringify(c);
+            } catch {
+                return String(c);
+            }
+        }
+
+        try {
+            return JSON.stringify(obj);
+        } catch {
+            return String(obj);
+        }
+    }
+
+    function getApiErrorMessage(err: unknown): string {
+        // unwrapResult throws either action.payload (rejectWithValue) or action.error
+        const payloadMsg = extractApiErrorPayloadMessage(err);
+        return payloadMsg || 'Unknown error';
+    }
 
         const validateForm = () => {
                 const errors: { [key: string]: string } = {};
@@ -186,13 +234,12 @@ useEffect(() => {
 
             router.push(`/analysis/quant?${queryParams.toString()}`);
           }
-        } catch (error) {
-          console.error('Error uploading image:', error);
+                } catch (err) {
+                    notify('error', `Raw densitogram API failed: ${getApiErrorMessage(err)}`);
         } finally {
           setIsLoading(false);
         }
       };
-
 
     // Update: handle input change for each field, with special handling for estimated_band_width_mm
     const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -232,6 +279,21 @@ useEffect(() => {
     return (
         
         <div className="flex flex-col items-center mt-4 w-full">
+            {uiAlert && (
+                <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4">
+                    <div
+                        className={`alert ${uiAlert.type === 'error'
+                            ? 'alert-error'
+                            : uiAlert.type === 'warning'
+                                ? 'alert-warning'
+                                : 'alert-success'
+                            } shadow-lg`}
+                    >
+                        <span className="whitespace-pre-wrap break-words">{uiAlert.message}</span>
+                        <button className="btn btn-sm btn-ghost" onClick={() => setUiAlert(null)}>✕</button>
+                    </div>
+                </div>
+            )}
             <fieldset className="fieldset p-4">
                 <legend className="fieldset-legend text-lg font-semibold">Pick Chromatogram Images</legend>
                 <input
