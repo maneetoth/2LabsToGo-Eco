@@ -8,6 +8,8 @@ import warnings
 import base64
 from io import BytesIO
 from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
 
 def hill_function(x, vmax, kd, h):
     return (vmax * (x**h)) / (kd + (x**h))
@@ -75,8 +77,6 @@ true false
         model_func = linear_origin
         bounds = ([0.0], [np.inf])
     elif model_type == 'poly2':
-        from sklearn.preprocessing import PolynomialFeatures
-        from sklearn.linear_model import LinearRegression
 
         X = concentrations.reshape(-1, 1)
         poly = PolynomialFeatures(degree=2, include_bias=True)
