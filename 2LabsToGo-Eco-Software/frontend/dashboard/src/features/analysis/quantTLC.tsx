@@ -2170,7 +2170,7 @@ const handleDownloadReport = async () => {
   doc.setFontSize(10);
   doc.setFont("helvetica", "normal");
   doc.text(`Total Tracks: ${totalTracks}`, margin, y);
-  doc.text(`Analysis Mode: ${bandStep}`, margin + 60, y);
+  doc.text(`Reference Track: ${bandStep}`, margin + 60, y);
   y += 10;
 
   // Images Row
