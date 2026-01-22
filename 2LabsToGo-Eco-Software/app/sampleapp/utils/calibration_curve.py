@@ -275,7 +275,7 @@ def calibrate_and_predict(
     sns.lineplot(x=x_range, y=y_fit, color='blue', label='Fitted Curve')
     if len(preds_list) > 0:
         sns.scatterplot(x=preds_list, y=unknown_valid, color='green', marker='X', s=100, label='Predicted')
-    plt.xlabel('Concentration')
+    plt.xlabel('Amount')
     plt.ylabel('Peak area/height')
     plt.title('Calibration Curve')
     plt.grid(True)
