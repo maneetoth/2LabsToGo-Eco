@@ -1217,7 +1217,7 @@ const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) 
   } finally {
     setApiPeaksLoading(false);
   }
-}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse]);
+}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse, buildApiPeakParamsForRequest]);
 
 // Handler for edit_peak_integration API (update, add, delete operations)
 const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrationInfo) => {
@@ -1970,13 +1970,174 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
 const handleDownloadReport = async () => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 15;
-  const accentColor = [41, 128, 185]; // Professional Blue
+  const accentColor: [number, number, number] = [41, 128, 185]; // Professional Blue
   let y = margin;
+
+  const ensureSpace = (neededHeight: number) => {
+    if (y + neededHeight > pageHeight - margin) {
+      doc.addPage();
+      drawHeader();
+    }
+  };
+
+  // Draw a compact multi-channel densitogram chart directly into the PDF.
+  // This avoids screenshotting DOM/Recharts and keeps export self-contained.
+  const drawDensitogramChart = (
+    x0: number,
+    y0: number,
+    w: number,
+    h: number,
+    channels: Array<{ values: number[]; color: [number, number, number] }>
+  ) => {
+    const leftPad = 10;
+    const rightPad = 2;
+    const topPad = 2;
+    // Extra bottom padding so X tick labels and the axis label don't overlap
+    const bottomPad = 14;
+    const plotX0 = x0 + leftPad;
+    const plotY0 = y0 + topPad;
+    const plotW = Math.max(1, w - leftPad - rightPad);
+    const plotH = Math.max(1, h - topPad - bottomPad);
+
+    // Frame
+    doc.setDrawColor(200, 200, 200);
+    doc.setLineWidth(0.2);
+    doc.rect(x0, y0, w, h);
+
+    // Determine x-length (use max across channels)
+    const n = Math.max(...channels.map((c) => (Array.isArray(c.values) ? c.values.length : 0)));
+    if (!Number.isFinite(n) || n <= 1) return;
+
+    // Determine y-range across all channels
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const ch of channels) {
+      for (const v of ch.values) {
+        if (!Number.isFinite(v)) continue;
+        if (v < minY) minY = v;
+        if (v > maxY) maxY = v;
+      }
+    }
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return;
+    if (minY === maxY) {
+      minY -= 1;
+      maxY += 1;
+    }
+
+    // Light axes
+    doc.setDrawColor(220, 220, 220);
+    doc.setLineWidth(0.2);
+    doc.line(plotX0, plotY0 + plotH, plotX0 + plotW, plotY0 + plotH);
+    doc.line(plotX0, plotY0, plotX0, plotY0 + plotH);
+
+    const step = Math.max(1, Math.ceil(n / 300)); // downsample for PDF size/speed
+    const toX = (i: number) => plotX0 + (i / (n - 1)) * plotW;
+    const toY = (v: number) => {
+      const t = (v - minY) / (maxY - minY);
+      return plotY0 + plotH - t * plotH;
+    };
+
+    // Axis tick labels (compact)
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6);
+    doc.setTextColor(90, 90, 90);
+
+    const fmt = (v: number) => {
+      if (!Number.isFinite(v)) return '';
+      const av = Math.abs(v);
+      if (av >= 1000) return v.toFixed(0);
+      if (av >= 10) return v.toFixed(1);
+      return v.toFixed(2);
+    };
+
+    // Y ticks: min/mid/max
+    const yTicks = [minY, (minY + maxY) / 2, maxY];
+    for (const tv of yTicks) {
+      const ty = toY(tv);
+      doc.setDrawColor(235, 235, 235);
+      doc.setLineWidth(0.15);
+      doc.line(plotX0, ty, plotX0 + plotW, ty);
+      doc.setTextColor(90, 90, 90);
+      doc.text(fmt(tv), x0 + 1, ty + 1.5);
+    }
+
+    // X ticks: prefer 0 / mid / max, but avoid overlapping labels on narrow charts
+    const xTickCandidates = [
+      { i: 0, label: '0' },
+      { i: Math.floor((n - 1) / 2), label: String(Math.floor((n - 1) / 2)) },
+      { i: n - 1, label: String(n - 1) },
+    ]
+      .filter((t, idx, arr) => arr.findIndex((u) => u.i === t.i) === idx)
+      .sort((a, b) => a.i - b.i);
+
+    const minLabelGapPx = 16; // tuned for fontSize=6
+    const selectedXTicks: Array<{ i: number; label: string; x: number }> = [];
+    for (const t of xTickCandidates) {
+      const tx = toX(t.i);
+      const prev = selectedXTicks[selectedXTicks.length - 1];
+      if (!prev || Math.abs(tx - prev.x) >= minLabelGapPx) {
+        selectedXTicks.push({ ...t, x: tx });
+      }
+    }
+
+    const xTickLabelY = y0 + h - 7;
+    for (const t of selectedXTicks) {
+      doc.setDrawColor(235, 235, 235);
+      doc.setLineWidth(0.15);
+      doc.line(t.x, plotY0, t.x, plotY0 + plotH);
+      doc.setTextColor(90, 90, 90);
+      try {
+        (doc as any).text(t.label, t.x, xTickLabelY, { align: 'center' });
+      } catch {
+        doc.text(t.label, t.x - 2, xTickLabelY);
+      }
+    }
+
+    // Axis labels
+    doc.setTextColor(70, 70, 70);
+    doc.setFontSize(7);
+    // Put the X label at bottom-right to avoid colliding with mid tick labels (e.g. 40)
+    const xAxisLabelY = y0 + h - 2;
+    try {
+      (doc as any).text('hRF', x0 + w - 2, xAxisLabelY, { align: 'right' });
+    } catch {
+      doc.text('hRF', x0 + w - 10, xAxisLabelY);
+    }
+    // Rotated Y label (fallback to horizontal if rotation options not supported)
+    try {
+      (doc as any).text('Pixel Intensity (AU)', x0 + 2, plotY0 + plotH / 2 + 10, { angle: 90 });
+    } catch {
+      doc.text('Pixel Intensity (AU)', x0 + 1, plotY0 + 6);
+    }
+
+    for (const ch of channels) {
+      const vals = ch.values;
+      if (!Array.isArray(vals) || vals.length <= 1) continue;
+
+      doc.setDrawColor(ch.color[0], ch.color[1], ch.color[2]);
+      doc.setLineWidth(0.35);
+
+      let prevX: number | null = null;
+      let prevY: number | null = null;
+
+      for (let i = 0; i < n; i += step) {
+        const v = vals[i] ?? 0;
+        const x = toX(i);
+        const y = toY(Number.isFinite(v) ? v : 0);
+        if (prevX !== null && prevY !== null) {
+          doc.line(prevX, prevY, x, y);
+        }
+        prevX = x;
+        prevY = y;
+      }
+    }
+  };
 
   // --- Helper: Header Bar ---
   const drawHeader = () => {
-    doc.setFillColor(...accentColor);
+    doc.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
     doc.rect(0, 0, pageWidth, 25, "F");
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(20);
@@ -1993,10 +2154,10 @@ const handleDownloadReport = async () => {
   const addSectionHeader = (title: string) => {
     doc.setFontSize(12);
     doc.setFont("helvetica", "bold");
-    doc.setTextColor(...accentColor);
+    doc.setTextColor(accentColor[0], accentColor[1], accentColor[2]);
     doc.text(title.toUpperCase(), margin, y);
     doc.setLineWidth(0.5);
-    doc.setDrawColor(...accentColor);
+    doc.setDrawColor(accentColor[0], accentColor[1], accentColor[2]);
     doc.line(margin, y + 2, pageWidth - margin, y + 2);
     y += 10;
   };
@@ -2034,12 +2195,149 @@ const handleDownloadReport = async () => {
   doc.text(`Applied Filters: ${prep}`, margin, y);
   y += 10;
 
+  // Advanced options summary (only chosen params)
+  const buildAdvancedSummaryLines = () => {
+    const lines: string[] = [];
+
+    // Smoothing
+    const smoothing = advancedOptions?.smoothing ?? { windowSize: '', polynomialOrder: '', differentiationOrder: '' };
+    const smoothingParts: string[] = [];
+    if (String(smoothing.windowSize ?? '').trim() !== '') smoothingParts.push(`window.size=${String(smoothing.windowSize).trim()}`);
+    if (String(smoothing.polynomialOrder ?? '').trim() !== '') smoothingParts.push(`poly.order=${String(smoothing.polynomialOrder).trim()}`);
+    if (String(smoothing.differentiationOrder ?? '').trim() !== '') smoothingParts.push(`diff.order=${String(smoothing.differentiationOrder).trim()}`);
+    if (smoothingParts.length > 0) lines.push(`Smoothing: ${smoothingParts.join(', ')}`);
+
+    // Baseline
+    const baseline = advancedOptions?.baseline ?? { type: '', params: {} as Record<string, string> };
+    const baselineType = String(baseline.type ?? '').trim();
+    const baselineParams = (baseline.params ?? {}) as Record<string, string>;
+    const baselineParamParts = Object.entries(baselineParams)
+      .map(([k, v]) => [k, String(v ?? '').trim()] as const)
+      .filter(([, v]) => v !== '')
+      .map(([k, v]) => `${k}=${v}`);
+    if (baselineType || baselineParamParts.length > 0) {
+      lines.push(`Baseline: ${baselineType || 'selected'}${baselineParamParts.length ? `, ${baselineParamParts.join(', ')}` : ''}`);
+    }
+
+    // Warping
+    const warping = advancedOptions?.warping ?? {
+      method: '',
+      referenceTrack: '',
+      dtw: '',
+      ptw: '',
+      degree: '',
+      seg_len: '',
+    };
+    const warpingMethod = String(warping.method ?? '').trim();
+    const warpingParts: string[] = [];
+    const pushIf = (label: string, value: unknown) => {
+      const s = String(value ?? '').trim();
+      if (s !== '') warpingParts.push(`${label}=${s}`);
+    };
+    pushIf('referenceTrack', warping.referenceTrack);
+    pushIf('dtw', warping.dtw);
+    pushIf('ptw', warping.ptw);
+    pushIf('degree', warping.degree);
+    pushIf('seg_len', warping.seg_len);
+    if (warpingMethod || warpingParts.length > 0) {
+      lines.push(`Warping: ${warpingMethod || 'selected'}${warpingParts.length ? `, ${warpingParts.join(', ')}` : ''}`);
+    }
+
+    return lines;
+  };
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(60, 60, 60);
+  const advLines = buildAdvancedSummaryLines();
+  if (advLines.length > 0) {
+    const wrapped = doc.splitTextToSize(`Advanced Options: ${advLines.join(' | ')}`, pageWidth - margin * 2);
+    ensureSpace(wrapped.length * 5 + 6);
+    doc.text(wrapped, margin, y);
+    y += wrapped.length * 5 + 4;
+  } else {
+    ensureSpace(10);
+    doc.setFont("helvetica", "italic");
+    doc.text('Advanced Options: none selected', margin, y);
+    doc.setFont("helvetica", "normal");
+    y += 8;
+  }
+
+  // Preprocessed densitograms for all tracks (rendered as charts, 2 columns; auto page breaks)
+  ensureSpace(14);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(50, 50, 50);
+  doc.text('Preprocessed Densitograms (All Tracks)', margin, y);
+  y += 8;
+
+  const colGap = 6;
+  const chartW = (pageWidth - margin * 2 - colGap) / 2;
+  const chartH = 55;
+  const labelH = 6;
+  const rowGap = 10;
+
+  let rowY = y;
+  for (let idx = 0; idx < totalTracks; idx++) {
+    const col = idx % 2;
+    const isRowStart = col === 0;
+
+    // Only check for overflow at the start of each row (since rows are fixed height)
+    if (isRowStart) {
+      const rowHeight = chartH + labelH + rowGap;
+      if (rowY + rowHeight > pageHeight - margin) {
+        doc.addPage();
+        drawHeader();
+        addSectionHeader('Step 2: Preprocessing Configuration (cont.)');
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(50, 50, 50);
+        doc.text('Preprocessed Densitograms (All Tracks)', margin, y);
+        y += 8;
+        rowY = y;
+      }
+    }
+
+    const x = margin + col * (chartW + colGap);
+    const trackKey = String(idx + 1);
+    const trackSeries: any = (preprocessedData as any)?.[trackKey];
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(80, 80, 80);
+
+    if (trackSeries && (trackSeries.red || trackSeries.green || trackSeries.blue || trackSeries.grayscale)) {
+      drawDensitogramChart(x, rowY, chartW, chartH, [
+        { values: (trackSeries.red ?? []) as number[], color: [255, 0, 0] },
+        { values: (trackSeries.green ?? []) as number[], color: [0, 128, 0] },
+        { values: (trackSeries.blue ?? []) as number[], color: [0, 0, 255] },
+        { values: (trackSeries.grayscale ?? []) as number[], color: [128, 128, 128] },
+      ]);
+      doc.text(`Track ${idx + 1}`, x, rowY + chartH + 5);
+    } else {
+      doc.setDrawColor(200, 200, 200);
+      doc.rect(x, rowY, chartW, chartH);
+      doc.text(`Track ${idx + 1}: no preprocessed data`, x + 2, rowY + 10);
+    }
+
+    if (col === 1) {
+      rowY += chartH + labelH + rowGap;
+    }
+  }
+
+  // Move y below the last rendered row
+  if (totalTracks % 2 === 0) {
+    y = rowY + 6;
+  } else {
+    y = rowY + chartH + labelH + 6;
+  }
+
   // --- SECTION 3: STANDARDS TABLE ---
   addSectionHeader("Step 3: Track Metadata & Standards");
   const standardRows = Array.from({ length: totalTracks }).map((_, i) => [
     `Track ${i + 1}`,
     selectedStandards[`band-${i}`] ? "YES" : "NO",
-    quantityValues[i] ?? "N/A"
+    Number.isFinite(quantityValues[i]) ? Number(quantityValues[i]).toFixed(4) : "N/A"
   ]);
 
   autoTable(doc, {
@@ -2056,6 +2354,45 @@ const handleDownloadReport = async () => {
   // --- SECTION 4: CALIBRATION ---
   if (y > 220) { doc.addPage(); y = 25; } // Simple page break check
   addSectionHeader("Step 4: Calibration Curve");
+
+  // Model + metrics (best-effort: backend key names may vary)
+  const cal: any = calibrationResult as any;
+  const preds: any = cal?.predictions;
+  const modelLabel = modelOptions.find((o) => o.value === modelType)?.label ?? String(modelType);
+  const r2Raw =
+    cal?.r2 ??
+    cal?.R2 ??
+    cal?.r_squared ??
+    cal?.rSquared ??
+    cal?.r_square ??
+    cal?.rsq ??
+    preds?.r2 ??
+    preds?.R2 ??
+    preds?.r_squared ??
+    preds?.rSquared ??
+    preds?.r_square ??
+    preds?.rsq;
+  const rmseRaw =
+    cal?.rmse ??
+    cal?.RMSE ??
+    cal?.root_mean_squared_error ??
+    preds?.rmse ??
+    preds?.RMSE ??
+    preds?.root_mean_squared_error;
+  const r2 = Number(r2Raw);
+  const rmse = Number(rmseRaw);
+
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(50, 50, 50);
+  doc.text(`Model: ${modelLabel}`, margin, y);
+  y += 7;
+  doc.text(
+    `R2: ${Number.isFinite(r2) ? r2.toFixed(4) : '-'}   RMSE: ${Number.isFinite(rmse) ? rmse.toFixed(4) : '-'}`,
+    margin,
+    y
+  );
+  y += 8;
   
   if (calibrationResult?.predictions?.equation) {
     doc.setFontSize(11);
@@ -2070,18 +2407,33 @@ const handleDownloadReport = async () => {
   }
 
   // --- SECTION 5: FINAL RESULTS ---
-  addSectionHeader("Step 5: Predicted Concentrations (Unknowns)");
+  addSectionHeader("Step 5: Predicted Amount (Unknowns)");
   
   if (Array.isArray(calibrationResult?.predictions?.concentrations)) {
-    const resultRows = calibrationResult.predictions.concentrations.map((conc, idx) => [
-        `Track ${unknownIndexList[idx] + 1}`,
-        typeof unknown_peaks[idx] === "number" ? unknown_peaks[idx].toFixed(4) : "-",
-        Number(conc).toFixed(4)
-    ]);
+    // Unknowns are the tracks that are NOT selected as standards.
+    // Keep ordering consistent with how unknowns are built for calibration (ascending track index).
+    const selectedKeysForReport = Object.keys(selectedStandards).filter((k) => selectedStandards[k]);
+    const standardTrackIndicesForReport = selectedKeysForReport
+      .map((k) => Number.parseInt(k.replace("band-", ""), 10))
+      .filter((n) => Number.isFinite(n));
+    const unknownTrackIndicesForReport = Array.from({ length: totalTracks }, (_, i) => i).filter(
+      (i) => !standardTrackIndicesForReport.includes(i)
+    );
+
+    const resultRows = calibrationResult.predictions.concentrations.map((conc, idx) => {
+      const trackIndex = unknownTrackIndicesForReport[idx];
+      const baseIdx = Number.isFinite(trackIndex) ? (trackIndex as number) : idx;
+      const trackNo = baseIdx + 1;
+
+      const concNum = Number(conc);
+      const concText = Number.isFinite(concNum) ? concNum.toFixed(4) : '-';
+
+      return [`Track ${trackNo}`, concText];
+    });
 
     autoTable(doc, {
       startY: y,
-      head: [['Sample Source', 'Peak Height', 'Predicted Concentration']],
+      head: [['Sample Source', 'Predicted Amount']],
       body: resultRows,
       theme: 'grid',
       headStyles: { fillColor: [39, 174, 96] }, // Green for results
@@ -2935,7 +3287,7 @@ const openSelectStandardModal = () => {
         <div className="p-4 border rounded-lg shadow-md w-full">
             <div className="flex justify-between items-center mb-4">
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold text-gray-700">Peak Detection (API)</h2>
+                <h2 className="text-lg font-semibold text-gray-700">Peak Integration</h2>
                 <InfoTip
                   tip={formatHelpTip((ADVANCED_PREPROCESS_HELP as any)["Peak.Integration"] as HelpEntry)}
                   direction="bottom"
@@ -3695,7 +4047,7 @@ const openSelectStandardModal = () => {
             <div className="text-xs uppercase text-gray-500">R²</div>
             <div className="text-lg font-semibold">
               {typeof (calibrationResult as any).r2 === "number"
-                ? (calibrationResult as any).r2.toFixed(4)
+                ? (calibrationResult as any).r2.toFixed(1)
                 : "-"}
             </div>
           </div>
@@ -3725,16 +4077,16 @@ const openSelectStandardModal = () => {
         </div>
       )}
 
-      {/* Predicted concentrations mapped to unknown peaks */}
+      {/* Predicted amounts mapped to unknown peaks */}
       {(calibrationResult as any).predictions?.concentrations && (
         <div className="w-full max-w-xl mt-4">
-          <h4 className="font-semibold mb-2">Predicted Concentrations for Unknown Peaks</h4>
+          {<h4 className="font-semibold mb-2">Predicted Amounts for Unknown peak {quantityMetric}</h4>}
           <table className="table table-zebra w-full">
             <thead>
               <tr>
                 <th>Unknown Track</th>
                 {/* <th>Peak Height</th> */}
-                <th>Predicted Concentration</th>
+                <th>Predicted Amount</th>
               </tr>
             </thead>
             <tbody>
@@ -3746,7 +4098,7 @@ const openSelectStandardModal = () => {
                       ? unknown_peaks[idx].toFixed(4)
                       : "-"}
                   </td> */}
-                  <td>{Number(conc).toFixed(4)}</td>
+                  <td>{Number(conc).toFixed(1)}</td>
                 </tr>
               ))}
             </tbody>
