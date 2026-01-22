@@ -1,6 +1,5 @@
 import numpy as np
 from PIL import Image, ImageDraw
-from io import BytesIO
 
 class Extract_band_positions:
     def __init__(self, image_array=None):
@@ -52,13 +51,10 @@ class Extract_band_positions:
         }
 
         for i, (start, end) in enumerate(zip(band_starts_px, band_ends_px)):
-            # Extract band region from the cropped image, spanning the full height
             band_region = self.cropped_img[:, start:end]
-            # Convert band_region to PIL Image for easy saving/viewing
             band_image_pil = Image.fromarray(band_region.astype(np.uint8))
             band_info = {
-                'band_number': i + 1,  # 1-based indexing
-                'start_px': start,
+                'band_number': i + 1,  
                 'end_px': end,
                 'width_px': end - start,
                 'region_array': band_region,
@@ -89,16 +85,13 @@ class Extract_band_positions:
 
         self.bands_dict = self.extract_band_regions(band_starts_px, band_ends_px)
 
-        # Convert cropped_img (numpy) to PIL for drawing
         img_pil = Image.fromarray(self.cropped_img.astype(np.uint8))
         draw = ImageDraw.Draw(img_pil)
 
         for center, start, end in zip(band_centers_px, band_starts_px, band_ends_px):
-            # Draw green borders for the band (start and end)
             draw.line([(start, 0), (start, img_pil.height)], fill="green", width=2)
             draw.line([(end, 0), (end, img_pil.height)], fill="green", width=2)
             draw.rectangle([(start, 0), (end, img_pil.height)], outline="green", width=2)
-            # Draw red dashed center line
             draw.line([(center, 0), (center, img_pil.height)], fill="red", width=2)
    
 
@@ -116,7 +109,6 @@ class Extract_band_positions:
 
         self.calculate_pixel_to_distance(real_width_mm, real_height_mm)
         self.crop_region(crop_bottom_mm, crop_top_mm)
-
         return self.locate_bands_center_spacing(first_band_mm, band_spacing_mm, num_bands, estimated_band_width_mm)
 
     def get_bands_dict(self):

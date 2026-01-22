@@ -1,32 +1,32 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import io
-import os
 import base64
 import json
-from django.conf import settings
-from scipy.signal import savgol_filter
-from dtw import dtw
-from copy import deepcopy
 from typing import Optional
-import numpy as np
-from dtw import dtw
 from copy import deepcopy
-from typing import Optional
-import numpy as np # Added
+from numpy.lib.stride_tricks import sliding_window_view
+
 import numpy as np
-###############################################################################################################################
-# warping dtw and ptw
-from dtaidistance import dtw
-from numpy.polynomial import Polynomial
-import numpy as np
-from joblib import Parallel, delayed
-import numpy as np
-import json
-import base64
-import io
 from PIL import Image
-from pybaselines import morphological
+
+# SciPy / signal / smoothing /_fft / sparse
+from scipy.signal import (
+    find_peaks,
+    peak_widths,
+    savgol_filter
+
+)
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
+from scipy.fft import rfft, irfft
+
+# NumPy helpers
+from numpy.lib.stride_tricks import sliding_window_view
+from numpy.polynomial import Polynomial
+
+# Parallel / DTW / baselines
+from joblib import Parallel, delayed
+from dtw import dtw
+from pybaselines import morphological, whittaker, polynomial
 
 def warping_dtw(query, template):
     """
@@ -38,7 +38,6 @@ def warping_dtw(query, template):
         band = list(band)
         alignment,_ = dtw.warp(band, template)
         return alignment
-    # Parallelize over all bands in query
     results = Parallel(n_jobs=-1)(delayed(align_band)(band) for band in query)
     return results
 
@@ -96,18 +95,9 @@ def _single_ptw(query, template, degree=1, segment_length=None):
     if len(aligned_query_list) < len(query):
         aligned_query_list.extend(query[len(aligned_query_list):])
     return total_distance, aligned_query_list
-################################################################################################################################
+
+
 # baseline line correction methods
-import numpy as np
-from scipy.signal import find_peaks
-from numpy.lib.stride_tricks import sliding_window_view
-from scipy.signal import medfilt, find_peaks, peak_widths
-from pybaselines import whittaker, morphological, polynomial
-from numpy.lib.stride_tricks import sliding_window_view
-from scipy import sparse
-from scipy.sparse.linalg import spsolve
-from scipy.fft import rfft, irfft
-# --- helpers (unchanged) ---
 def _whittaker_smooth(y, lam, diff_order=2):
     y = np.asarray(y, float)
     n = y.size
@@ -160,7 +150,6 @@ def _medianwindow_baseline(signal, hwm, hws=None, end=False):
     w = max(3, 2 * hwm + 1)   # effective window size (odd, >=3)
 
     if end:
-        # Original endpoint handling: compute medians on truncated/asymmetric windows at the edges
         n = x.size
         med = np.empty(n, dtype=float)
         for i in range(n):
@@ -168,12 +157,11 @@ def _medianwindow_baseline(signal, hwm, hws=None, end=False):
             i1 = min(n, i + hwm + 1)
             med[i] = np.median(x[i0:i1])
     else:
-        # Fast path with reflection padding (not "original", but commonly used in R helpers)
+
         pad = w // 2
         xp = np.pad(x, (pad, pad), mode="reflect")
         med = np.median(sliding_window_view(xp, w), axis=-1)
 
-    # Optional Gaussian smoothing with half-width hws (R: "gaussian weighting")
     if hws is None or float(hws) <= 0:
         baseline = med
     else:
@@ -182,16 +170,14 @@ def _medianwindow_baseline(signal, hwm, hws=None, end=False):
     return baseline
 
 
-
-
 def peak_detection(
     signal,
-    left=10, right=300,          # width limits in points (valley-to-valley half-widths)
-    lwin=50, rwin=50,            # flank windows for local background & rolling median
-    hws=0,                       # optional Gaussian smoothing half-width on the baseline
-    mono=0,                      # enforce non-increasing baseline if > 0
-    snminimum=None,              # keep peaks with S/N >= snminimum (None disables)
-    height=None, distance=None, prominence=None  # optional find_peaks gates
+    left=10, right=300,          
+    lwin=50, rwin=50,            
+    hws=0,                      
+    mono=0,                     
+    snminimum=None,             
+    height=None, distance=None, prominence=None 
 ):
     """
     R-like baseline.peakDetection in one call.
@@ -211,7 +197,7 @@ def peak_detection(
     x = np.asarray(signal, float).ravel()
     n = x.size
 
-    # ---------- helpers ----------
+    # helper functions
     def _valley_bounds(arr, p):
         """Find nearest valleys (local minima) to the left and right of peak index p."""
         # left
@@ -245,10 +231,9 @@ def peak_detection(
         g /= g.sum()
         return np.convolve(y, g, mode="same")
 
-    # ---------- 1) initial candidates (y) ----------
+    # initial candidates 
     y, _ = find_peaks(x, height=height, distance=distance, prominence=prominence)
 
-    # nothing to do?
     if y.size == 0:
         baseline = _gaussian_smooth(x.copy(), hws) if hws else x.copy()
         if mono:
@@ -263,36 +248,35 @@ def peak_detection(
             "y": y, "y2": y, "y3": y
         }
 
-    # ---------- 2) valley-to-valley width filter (y2) ----------
+    # valley-to-valley width filter
     Lv, Rv = zip(*(_valley_bounds(x, p) for p in y))
     Lv = np.array(Lv)
     Rv = np.array(Rv)
-    Lw = y - Lv                   # left half-width (points)
-    Rw = Rv - y                   # right half-width (points)
+    Lw = y - Lv                   
+    Rw = Rv - y                   
     keep = (Lw >= left) & (Rw <= right)
     y2 = y[keep]; Lv = Lv[keep]; Rv = Rv[keep]
 
-    # ---------- 3) segment suppression (valley-to-valley) ----------
+    #segment suppression (valley-to-valley)
     x_sup = x.copy()
     for p, lv, rv in zip(y2, Lv, Rv):
-        # flanking neighborhoods outside the peak segment [lv..rv]
+
         left_nei  = x[max(0, lv - lwin): lv]
         right_nei = x[rv+1: min(n, rv + 1 + rwin)]
         if left_nei.size + right_nei.size > 0:
             repl = np.median(np.r_[left_nei, right_nei])
         else:
-            # fallback if near edges
+
             repl = np.min(x[lv:rv+1])
         x_sup[lv:rv+1] = repl
 
-    # ---------- 4) rolling-median envelope -> baseline ----------
+    # rolling-median envelope -> baseline
     win = max(3, 2 * int(min(lwin, rwin)) + 1)  # odd
     pad = win // 2
     xp = np.pad(x_sup, (pad, pad), mode="reflect")
     midspec = np.median(sliding_window_view(xp, win), axis=-1)
     baseline = _gaussian_smooth(midspec, hws) if hws and hws > 0 else midspec
 
-    # optional monotone decreasing baseline
     if mono:
         for i in range(1, baseline.size):
             if baseline[i] > baseline[i-1]:
@@ -300,7 +284,7 @@ def peak_detection(
 
     corrected = x - baseline
 
-    # ---------- 5) S/N gate (final peaks) ----------
+    # S/N gate (final peaks)
     y3 = y2.copy()
     peaks = y2.copy()
     sn = np.array([], dtype=float)
@@ -323,10 +307,6 @@ def peak_detection(
     }
 
 
-
-
-
-
 def rolling_ball_baseline(signal, half_window=100, smooth_half_window=50):
     """
     Rolling-ball baseline with reflection padding to fix edge effects.
@@ -340,8 +320,6 @@ def rolling_ball_baseline(signal, half_window=100, smooth_half_window=50):
     )
     baseline = base_pad[pad:-pad]  # remove padding
     return baseline
-import numpy as np
-from scipy.signal import find_peaks, peak_widths
 
 def baseline_peak_detection(
     signal,
@@ -367,22 +345,19 @@ def baseline_peak_detection(
     x = np.asarray(signal, float).ravel()
     n = x.size
 
-    # 1) initial candidates (y)
     y, _ = find_peaks(x, height=height, distance=distance, prominence=prominence)
 
-    # 2) width filter (y2)
+
     y2 = y
     if y2.size:
         widths = peak_widths(x, y2, rel_height=0.5)[0]
         keep = (widths >= left) & (widths <= right)
         y2 = y2[keep]
 
-    # 3) suppress peaks locally to estimate midspec (rolling median)
     x_np = x.copy()
     for p in y2:
         i0 = max(0, p - lwin)
         i1 = min(n, p + rwin + 1)
-        # neighborhood excluding [i0, i1)
         left_nei  = x[max(0, i0 - lwin): i0]
         right_nei = x[i1: min(n, i1 + rwin)]
         local = np.r_[left_nei, right_nei]
@@ -393,23 +368,20 @@ def baseline_peak_detection(
     win = max(3, 2 * int(min(lwin, rwin)) + 1)
     pad = win // 2
     xp = np.pad(x_np, (pad, pad), mode='reflect')
-    # fast sliding rolling median
-    from numpy.lib.stride_tricks import sliding_window_view
+    
     midspec = np.median(sliding_window_view(xp, win), axis=-1)
 
-    # 4) optional monotone decreasing baseline
     if mono:
         for i in range(1, midspec.size):
             if midspec[i] > midspec[i - 1]:
                 midspec[i] = midspec[i - 1]
 
-    # 5) S/N selection
-    y3 = y2.copy()  # peaks prior to S/N selection (R returns this)
+
+    y3 = y2.copy()  
     peaks = y2.copy()
     sn = np.array([], dtype=float)
     if snminimum is not None and peaks.size:
         resid = x - midspec
-        # MAD-based noise estimate (like R implementations)
         noise = np.median(np.abs(resid - np.median(resid))) / 0.6745 + 1e-12
         sn_vals = (x[peaks] - midspec[peaks]) / noise
         keep = sn_vals >= float(snminimum)
@@ -426,11 +398,11 @@ def baseline_peak_detection(
         "sn": sn,
         "y3": y3,
         "midspec": midspec,
-        "y": y,      # first estimate
-        "y2": y2     # second estimate (after width filter)
+        "y": y,      
+        "y2": y2     
     }
 
-# --- main function (updated IRLS + shape handling) ---
+# main function (updated IRLS + shape handling)
 def baseline_correction(data, method, **kwargs):
     """
     Perform baseline correction on 2D data (samples x points) or (samples x points x 1).
@@ -459,19 +431,18 @@ def baseline_correction(data, method, **kwargs):
                 **kwargs
             )
         elif method_type == "irls":
-            # Robust IRLS for Whittaker baseline
             lam1 = float(method.get('lam', method.get('lambda1', 1e5)))
             lam2 = 10 ** float(method.get('lam', 9))
-            wi   = float(method.get('wi', 0.05))          # small weight on peaks
+            wi   = float(method.get('wi', 0.05))          
             tol  = float(method.get('tol', 1e-6))
             diff_order = int(method.get('diff_order', 2))
             max_iter = int(method.get('max_iter', 200))
             peaks_negative = bool(method.get('peaks_negative', False))
-            trim_ends = int(method.get('trim_ends', 0))   # optional: down-weight edges
+            trim_ends = int(method.get('trim_ends', 0)) 
             baseline = _whittaker_smooth(signal, lam=lam1, diff_order=diff_order)
             for _ in range(max_iter):
                 r = signal - baseline
-                if peaks_negative:  # flip if peaks point downwards
+                if peaks_negative:  
                     r = -r
                 w = np.where(r > 0, wi, 1.0 - wi)
                 if trim_ends > 0:
@@ -512,16 +483,10 @@ def baseline_correction(data, method, **kwargs):
                 base = _whittaker_smooth(new_base, lam=lambda_, diff_order=diff_order)
             baseline = base
         elif method_type == "medianwindow":
-            # R argument names:
-            #   hwm = half-width for local medians
-            #   hws = half-width for gaussian smoothing (optional)
-            #   end = original endpoint handling (boolean)
-            #
-            # Backwards-compat: if user passed 'k_size', infer hwm = (k_size-1)//2.
             if 'hwm' in method:
                 hwm = int(method.get('hwm', 300))
             else:
-                ks = int(method.get('k_size', 2 * 300 + 1))  # default to ~R's example hwm=300 if k_size absent
+                ks = int(method.get('k_size', 2 * 300 + 1))  
                 if ks % 2 == 0:
                     ks += 1
                 hwm = max(1, (ks - 1) // 2)
@@ -568,7 +533,7 @@ def baseline_correction(data, method, **kwargs):
             raise ValueError(f"Unsupported method_type: {method_type}")
         corrected_rows[j, :] = signal - baseline
     return corrected_rows
-###########################################################################################################################################################
+
 # smoothing methods
 def Smoothing(data, input_opts):
     smoothed = []
@@ -581,7 +546,7 @@ def Smoothing(data, input_opts):
         ])
         smoothed.append(smoothed_channel)
     return np.stack(smoothed, axis=2) if len(data.shape) == 3 else smoothed[0]
-####################################################################################################################################
+
 # simple inversion method
 def simple_inversion(data):
     """
@@ -596,12 +561,7 @@ def simple_inversion(data):
     if min_val < 0:
         inverted = inverted - min_val  # shift so minimum is zero
     return inverted
-###########################################################################################################################
-import numpy as np
-import json
-import base64
-import io
-from PIL import Image
+
 
 def resample_to_100(arr):
     """
@@ -635,10 +595,6 @@ def resample_to_100(arr):
     old_idx = np.linspace(0, len(arr) - 1, len(arr))
     new_idx = np.linspace(0, len(arr) - 1, 100)
     arr_resampled = np.interp(new_idx, old_idx, arr)
-
-    # Optional normalization (uncomment to enable)
-    # arr_resampled = (arr_resampled - arr_resampled.min()) / (arr_resampled.max() - arr_resampled.min() + 1e-8)
-
     return arr_resampled.tolist()
 
 
@@ -668,7 +624,7 @@ def plot_before_preprocessing(
         band_array = band_array / 255.0
         if band_array.size == 0:
             print(f"Warning: region_array for band {selected_band_number} is empty.")
-            band_array = np.zeros((1, 1))  # or skip this band with `continue`
+            band_array = np.zeros((1, 1)) 
             band_min = 0
             band_max = 0
         else:
@@ -679,9 +635,8 @@ def plot_before_preprocessing(
         else:
             band_array = np.zeros_like(band_array)
 
-        # AFTER (match default R behavior)
         band_array = np.array(band_data['region_array']).astype(np.float32)
-        if band_array.max() > 1.5:          # 8-bit → 0..1
+        if band_array.max() > 1.5:       
             band_array /= 255.0
 
         
@@ -701,8 +656,8 @@ def plot_before_preprocessing(
         else:
             print(f"Error: band_array has shape {band_array.shape}, expected 2 or 3 dimensions.")
             return {}
-        ####################################################################################
-        r_densitogram = resample_to_100(r_densitogram)[::-1]    # reversing the list vlaues
+
+        r_densitogram = resample_to_100(r_densitogram)[::-1]   
         g_densitogram = resample_to_100(g_densitogram)[::-1] 
         b_densitogram = resample_to_100(b_densitogram)[::-1] 
         grayscale_densitogram = resample_to_100(grayscale_densitogram)[::-1] 
@@ -728,7 +683,6 @@ def plot_before_preprocessing(
         img_buf.seek(0)
         
         # Encode to base64
-        
 
         band_image = base64.b64encode(img_buf.getvalue()).decode('utf-8')
         raw_data[selected_band_number] = {
@@ -739,12 +693,8 @@ def plot_before_preprocessing(
             "band_image": band_image
         }
 
-
     return raw_data
 
-import numpy as np
-from copy import deepcopy
-import json
 def densitogram_after_preprocessing(densitogram_data: dict, preprocess_order: list, preprocess_option: dict):
     """
     Applies preprocessing to existing densitogram data (no re-extraction from image).
@@ -763,18 +713,15 @@ def densitogram_after_preprocessing(densitogram_data: dict, preprocess_order: li
     if not isinstance(preprocess_option, dict):
         raise ValueError("preprocess_option must be a dictionary.")
     processed_data = deepcopy(densitogram_data)
-    # Convert densitogram data into shape (samples, time, channels)
-    bands = sorted(processed_data.keys(), key=lambda x: int(x))  # ensure order like ['1', '2', ...]
+
+    bands = sorted(processed_data.keys(), key=lambda x: int(x)) 
     channels = ['red', 'green', 'blue', 'grayscale']
     for channel in channels:
-        # Gather all bands for this channel
-        channel_matrix = np.array([processed_data[band][channel] for band in bands])  # shape: (bands, time)
-        # channel_matrix: all channels of 17 bands
-        channel_matrix = channel_matrix[:, :, np.newaxis]  # shape: (bands, time, 1)
-        # shame channel matrix but just added one new_axis
-        # need to check from here
+  
+        channel_matrix = np.array([processed_data[band][channel] for band in bands])  
+        channel_matrix = channel_matrix[:, :, np.newaxis]  
         processed = apply_preprocessing(channel_matrix, preprocess_order, preprocess_option)
-        # Update each band's processed signal
+   
         for i, band in enumerate(bands):
             processed_data[band][channel] = processed[i, :, 0].tolist()
     return json.dumps(processed_data)
@@ -786,7 +733,7 @@ def apply_preprocessing(
     preprocess_option: dict,
     reference: Optional[np.ndarray] = None
 ) -> np.ndarray:
-    # Input validation
+  
     if not isinstance(band_array, np.ndarray):
         raise ValueError("band_array must be a numpy ndarray.")
     if not isinstance(preprocess_order, list):
@@ -820,7 +767,7 @@ def apply_preprocessing(
             if data.ndim == 2:
                 data = data[:, :, np.newaxis]
         else:
-            # Use ASLS as the default baseline correction method
+
             default_method = {'type': 'asls', 'lam': 5, 'p': 0.01, 'max_iter': 50}
             data = baseline_correction(data, method=default_method)
             data = np.stack(data, axis=0)
@@ -828,9 +775,9 @@ def apply_preprocessing(
                 data = data[:, :, np.newaxis]
     if 'Warping' in preprocess_order:
         if 'Warping' in preprocess_option:
-            # need to edit this
+           
             if 'ptw' in preprocess_option['Warping'] and preprocess_option['Warping']['ptw']:
-                # Only perform PTW if specified
+               
                 data = warping_ptw(
                     band_array,
                     reference[preprocess_option['Warping']['ptw']],
@@ -846,16 +793,16 @@ def apply_preprocessing(
                     print(f"Warning: 'Warping' options not found in preprocess_option.")
             elif 'dtw' in preprocess_option['Warping'] and preprocess_option['Warping']['dtw']:
                 print('*' * 100)
-                # Only perform DTW if specified
+                
                 data = warping_dtw(band_array, reference[preprocess_option['Warping']['dtw']])
                 data = np.stack(data, axis=0)
-                # If needed, add a new axis to match (bands, time, 1) shape
+                
                 if data.ndim == 2:
                     data = data[:, :, np.newaxis]
             else:
                 print(f"Warning: 'Warping' options not found in preprocess_option.")
         else:
             raise ValueError("You must specify which warping option ('dtw' or 'ptw') to use in preprocess_option['Warping'].")
-    # Ensure all values are positive
+   
     data = np.maximum(data, 0)
     return data

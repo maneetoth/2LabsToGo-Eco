@@ -549,9 +549,7 @@ def peak_integration(request):
     if not isinstance(params, dict):
         return JsonResponse({"error": "params must be an object/dict."}, status=400)
 
-    # ------------------------
-    # 1. Peak detection params
-    # ------------------------
+
     min_peak_height = params.get("min_peak_height", None)
     peak_threshold = params.get("peak_threshold", None)
     distance_bw_peaks = params.get("distance_bw_peaks", None)
@@ -563,16 +561,11 @@ def peak_integration(request):
     peak_Min_peak_area = params.get("peak_Min_peak_area", None)
     find_area = params.get("find_area", True)
 
-    # ------------------------
-    # 2. Peak edits list
-    # ------------------------
+
     edit_peak_integration = params.get("edit_peak_integration", [])
 
     band_dict = {}
 
-    # ------------------------
-    # 3. Automatic peak detection
-    # ------------------------
     try:
         for band_key, band in data.items():
             band_dict[band_key] = {}
@@ -605,9 +598,7 @@ def peak_integration(request):
     except Exception as e:
         return JsonResponse({"error": "Failed during peak detection processing", "details": str(e)}, status=500)
 
-    # ------------------------
-    # 4. Apply manual edits
-    # ------------------------
+
     for edit in edit_peak_integration:
         band_key = edit.get("band_key")
         channel_name = edit.get("channel_name")
@@ -636,9 +627,7 @@ def peak_integration(request):
         if edit_type in ["add", "update"] and (new_start is None or new_end is None):
             continue
 
-        # ------------------------
-        # Compute peak_x for add or if not provided
-        # ------------------------
+
         if edit_type == "add":
             manual_peak_x = int(new_start + np.argmax(x[new_start:new_end]))
         elif manual_peak_x is None:
@@ -647,16 +636,11 @@ def peak_integration(request):
 
         dict_key = manual_peak_x  # Use peak_x as dictionary key
 
-        # ------------------------
-        # DELETE
-        # ------------------------
         if edit_type == "delete":
             # deletion will be applied later in final filtering
             continue
 
-        # ------------------------
-        # Compute area and peak height if not provided
-        # ------------------------
+ 
         try:
             area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
             if manual_peak_height is None:
@@ -665,9 +649,6 @@ def peak_integration(request):
             # Skip this edit if bounds/indices are invalid or computation fails
             continue
 
-        # ------------------------
-        # UPDATE
-        # ------------------------
         if edit_type == "update":
             if dict_key in band_dict[band_key][channel_name]:
                 band_dict[band_key][channel_name][dict_key] = {
@@ -680,10 +661,6 @@ def peak_integration(request):
                 # Treat as add if peak does not exist
                 edit_type = "add"
 
-        # ------------------------
-        # ADD
-        # ------------------------
-        if edit_type == "add":
             band_dict[band_key][channel_name][dict_key] = {
                 "peak_height": float(manual_peak_height),
                 "peak_x": int(manual_peak_x),
@@ -691,9 +668,6 @@ def peak_integration(request):
                 "area": area_val
             }
 
-    # ------------------------
-    # 5. Final filtering to remove deleted peaks
-    # ------------------------
     for edit in edit_peak_integration:
         if edit.get("edit_type", "").lower() == "delete":
             band_key = edit.get("band_key")

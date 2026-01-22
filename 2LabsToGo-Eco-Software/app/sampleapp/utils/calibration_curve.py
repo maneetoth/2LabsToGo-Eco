@@ -1,12 +1,16 @@
 import numpy as np
 from scipy.optimize import curve_fit, OptimizeWarning
 import matplotlib
-matplotlib.use('Agg')  # non-GUI backend for thread-safe offscreen rendering
+matplotlib.use('Agg')  #
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+import base64
+from io import BytesIO
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
 
-# 1. Model definitions
 def hill_function(x, vmax, kd, h):
     return (vmax * (x**h)) / (kd + (x**h))
 
@@ -16,13 +20,11 @@ def michaelis_menten_origin(s, vmax, km):
 def michaelis_menten_intercept(s, vmax, km, y_intercept):
     return (vmax * s) / (km + s) + y_intercept
 
-# Polynomial model
 def poly2(s, a0, a1, a2):
     """Quadratic calibration: y = a0 + a1*x + a2*x^2"""
     s = np.asarray(s, dtype=float)
     return a0 + a1 * s + a2 * (s ** 2)
 
-# Linear models
 def linear(s, m, b):
     """Linear calibration: y = m*x + b"""
     return m * s + b
@@ -31,7 +33,6 @@ def linear_origin(s, m):
     """Linear through origin: y = m*x"""
     return m * s
 
-# 2. Fit calibration curve based on known data
 def fit_calibration_curve(concentrations, peak_areas, model_type='hill'):
     """
     Fit a calibration curve to known data.
@@ -49,7 +50,6 @@ kd tree
 true false 
 
     """
-
 
     concentrations = np.asarray(concentrations, dtype=float)
     peak_areas    = np.asarray(peak_areas, dtype=float)
@@ -77,9 +77,6 @@ true false
         model_func = linear_origin
         bounds = ([0.0], [np.inf])
     elif model_type == 'poly2':
-        # Fit y = a0 + a1*x + a2*x^2 using scikit-learn PolynomialFeatures
-        from sklearn.preprocessing import PolynomialFeatures
-        from sklearn.linear_model import LinearRegression
 
         X = concentrations.reshape(-1, 1)
         poly = PolynomialFeatures(degree=2, include_bias=True)
@@ -107,7 +104,6 @@ true false
         )
     return consts, model_func
 
-# 3. Predict concentrations for unknown peaks
 def predict_concentration(peak_values, consts, model_type='hill'):
     """
     Given peak areas, invert the fitted model to estimate concentrations.
@@ -149,8 +145,6 @@ def predict_concentration(peak_values, consts, model_type='hill'):
         preds = y / denom
     elif model_type == 'poly2':
         a0, a1, a2 = map(float, consts)
-        # Solve a2*x^2 + a1*x + (a0 - y) = 0 for x
-        # Fallback to linear inversion if quadratic term is ~0
         if abs(a2) <= 1e-18:
             denom = a1 if abs(a1) > eps else np.nan
             preds = (y - a0) / denom
@@ -169,8 +163,6 @@ def predict_concentration(peak_values, consts, model_type='hill'):
             x1[valid] = (-B + sqrt_disc[valid]) / denom2
             x2[valid] = (-B - sqrt_disc[valid]) / denom2
 
-            # Choose a physically meaningful root:
-            # - prefer non-negative root where derivative is positive (increasing branch)
             dx1 = B + 2.0 * A * x1
             dx2 = B + 2.0 * A * x2
             x1_ok = np.isfinite(x1) & (x1 >= 0) & (dx1 > 0)
@@ -184,7 +176,6 @@ def predict_concentration(peak_values, consts, model_type='hill'):
             only_x2 = x2_ok & ~x1_ok
             preds[only_x2] = x2[only_x2]
 
-            # If neither passes the increasing-branch test, fall back to any non-negative root
             x1_nn = np.isfinite(x1) & (x1 >= 0)
             x2_nn = np.isfinite(x2) & (x2 >= 0)
             unresolved = ~np.isfinite(preds) & (x1_nn | x2_nn)
@@ -200,29 +191,23 @@ def predict_concentration(peak_values, consts, model_type='hill'):
     print("+"*100)
     return preds
 
-# 4. Equation formatting
 def get_superscript(num: int) -> str:
     sup = {"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵",
            "6":"⁶","7":"⁷","8":"⁸","9":"⁹"}
     return ''.join(sup[c] for c in str(num))
 def get_equation_string(coeffs, model_type):
     if model_type == 'poly2':
-        # Preserve small coefficients (common for x^2 term) by using
-        # significant-figure formatting instead of coarse rounding.
         a0, a1, a2 = (float(coeffs[0]), float(coeffs[1]), float(coeffs[2]))
 
         def fmt(v: float) -> str:
             if v == 0.0:
                 return "0"
-            # Use up to 6 significant digits; switch to scientific for very small/large.
             return f"{v:.6g}"
 
         return f"{fmt(a0)} + {fmt(a1)}x + {fmt(a2)}x{get_superscript(2)}"
 
     terms = []
     for index, coef in enumerate(coeffs):
-        # Keep backward-compatible formatting, but avoid deciding "near-zero"
-        # based on the rounded value.
         if abs(float(coef)) < 1e-12:
             continue
         rounded = round(float(coef), 3)
@@ -233,7 +218,6 @@ def get_equation_string(coeffs, model_type):
         else:
             terms.append(f"{rounded}x{get_superscript(index)}")
     return " + ".join(terms)
-# 5. Calibration & prediction with extended plotting
 def calibrate_and_predict(
     known_conc, known_peaks,
     unknown_peaks,
@@ -244,28 +228,16 @@ def calibrate_and_predict(
     and plot using seaborn. Returns results with a base64-encoded curve plot,
     R2 score, and RMSE error for the fit.
     """
-    import base64
-    from io import BytesIO
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    from sklearn.metrics import r2_score, mean_squared_error
-
-    # --- Fit model & predict ---
     popt, model_func = fit_calibration_curve(known_conc, known_peaks, model_type)
     preds = predict_concentration(unknown_peaks, popt, model_type)
 
     popt_list = np.asarray(popt).tolist()
-    # filter invalid predictions before plotting/limits
     preds_arr = np.asarray(preds, dtype=float)
     unknown_arr = np.asarray(unknown_peaks, dtype=float)
     valid_mask = np.isfinite(preds_arr)
     preds_list = preds_arr[valid_mask].tolist()
     unknown_valid = unknown_arr[valid_mask].tolist()
-
     equation_str = get_equation_string(popt_list, model_type)
-
-    # --- Curve data ---
     known_x = np.asarray(known_conc, dtype=float)
     known_y = np.asarray(known_peaks, dtype=float)
 
@@ -284,24 +256,20 @@ def calibrate_and_predict(
     x_margin = (x_max - x_min) * 0.15 if x_max > x_min else 2
     y_margin = (y_max - y_min) * 0.15 if y_max > y_min else 2
 
-    # For origin and intercept models, ensure curve starts at zero
     if model_type in ['mm_origin', 'linear_origin', 'mm_intercept']:
         curve_x_min = 0.0
     else:
         curve_x_min = x_min
 
-    # Extend curve range slightly beyond the largest data point for visibility
     x_range = np.linspace(curve_x_min, x_max + x_margin, 300)
     y_fit = model_func(x_range, *popt)
     y_fit = np.asarray(y_fit, dtype=float)
     y_fit[~np.isfinite(y_fit)] = np.nan
 
-    # --- Calculate R2 and RMSE on known data ---
     y_pred_known = model_func(np.array(known_conc, dtype=float), *popt)
     r2 = r2_score(known_peaks, y_pred_known)
     rmse = float(np.sqrt(mean_squared_error(known_peaks, y_pred_known)))
 
-    # --- Seaborn plot ---
     plt.figure(figsize=(8, 5))
     sns.scatterplot(x=known_conc, y=known_peaks, color='red', label='Known Data')
     sns.lineplot(x=x_range, y=y_fit, color='blue', label='Fitted Curve')
@@ -321,7 +289,6 @@ def calibrate_and_predict(
     buf.seek(0)
     plot_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
-    # --- Result ---
     return {
         'known_data': {
             'concentrations': list(map(float, known_conc)),
@@ -338,43 +305,3 @@ def calibrate_and_predict(
         'rmse': rmse,
         'plot_base64': plot_base64
     }
-
-
-# def show_base64_image(plot_base64: str):
-#     """
-#     Decode a base64-encoded PNG string and display it using matplotlib.
-#     Useful for testing calibration curve output.
-#     """
-#     import base64
-#     from io import BytesIO
-#     import matplotlib.pyplot as plt
-#     import matplotlib.image as mpimg
-
-#     img_data = base64.b64decode(plot_base64)
-#     buf = BytesIO(img_data)
-#     img = mpimg.imread(buf, format='png')
-#     plt.figure(figsize=(6, 4))
-#     plt.imshow(img)
-#     plt.axis('off')
-#     plt.title("Calibration Curve")
-#     plt.show()  # <-- Add this line to display the window
-
-# if __name__ == "__main__":
-#     # Dummy input data for local testing
-#     known_conc = [1, 2, 5, 10, 20, 50, 100]
-#     known_peaks = [3, 10, 30, 60, 80, 90, 95]
-#     unknown_peaks = [35, 85, 94]
-#     model_type = "hill"
-
-#     result = calibrate_and_predict(
-#         known_conc=known_conc,
-#         known_peaks=known_peaks,
-#         unknown_peaks=unknown_peaks,
-#         model_type=model_type
-#     )
-
-#     print("Calibration Result:")
-#     for k, v in result.items():
-#         if k != "plot_base64":
-#             print(f"{k}: {v}")
-#     print("\nCalibration curve image should pop up in a new window.")
