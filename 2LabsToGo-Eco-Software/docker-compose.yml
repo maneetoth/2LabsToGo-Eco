@@ -22,8 +22,10 @@ services:
       - DJANGO_SETTINGS_MODULE=app.settings
       - QT_X11_NO_MITSHM=1
       - DISPLAY=$DISPLAY
+    ports:
+      - "8000:8000"
     expose:
-      - "8000"
+      - "8000:8000"
     privileged: true
     volumes:
       - ./app:/app

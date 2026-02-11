@@ -38,6 +38,7 @@ import {
 import { validateHeaderValue } from "http";
 import CalibrationCurve from "@/components/charts/Calibration";
 import { base64ToDataUrl } from "@/utils/cropImage";
+import { apiUrl } from "@/utils/api";
 // ...existing code...
 import axios from "axios";
 import { log } from "console";
@@ -1135,7 +1136,7 @@ const fetchPeaksFromApi = useCallback(async () => {
     };
 
     const response = await axios.post<PeakDetectionApiResponse>(
-      'http://localhost/peak_integration/',
+      apiUrl('/peak_integration/'),
       requestBody,
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
@@ -1199,7 +1200,7 @@ const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) 
     console.log('Sending peak area change request:', requestBody);
 
     const response = await axios.post<PeakDetectionApiResponse>(
-      'http://localhost/peak_integration/',
+      apiUrl('/peak_integration/'),
       requestBody,
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
@@ -1264,7 +1265,7 @@ const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrati
     console.log('Sending edit_peak_integration request:', requestBody);
 
     const response = await axios.post<PeakDetectionApiResponse>(
-      'http://localhost/peak_integration/',
+      apiUrl('/peak_integration/'),
       requestBody,
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
@@ -1332,7 +1333,7 @@ const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => 
     console.log('Sending batch add peaks request:', requestBody);
 
     const response = await axios.post<PeakDetectionApiResponse>(
-      'http://localhost/peak_integration/',
+      apiUrl('/peak_integration/'),
       requestBody,
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
@@ -1407,7 +1408,7 @@ const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
         console.log('[quantTLC] Sending cross-channel batch add peaks request:', requestBody);
 
         const response = await axios.post<PeakDetectionApiResponse>(
-          'http://localhost/peak_integration/',
+          apiUrl('/peak_integration/'),
           requestBody,
           { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
         );
@@ -1955,7 +1956,7 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
   
         // if (response) {
         //     // Update marked image URL from response
-        //     const fullImageUrl = `http://localhost:8000${response.image_url}`;
+        //     const fullImageUrl = apiUrl(String(response.image_url ?? ""));
         //     const markedImg = document.querySelector('img[alt="Quant TLC Image"]') as HTMLImageElement;
         //     if (markedImg) {
         //         markedImg.src = fullImageUrl;
@@ -2171,6 +2172,9 @@ const handleDownloadReport = async () => {
   doc.setFont("helvetica", "normal");
   doc.text(`Total Tracks: ${totalTracks}`, margin, y);
   doc.text(`Reference Track: ${bandStep}`, margin + 60, y);
+
+  const calibrationChannelLabel = selectedPeak?.channel ? String(selectedPeak.channel) : "-";
+  doc.text(`Calibration Channel: ${calibrationChannelLabel}`, margin + 120, y);
   y += 10;
 
   // Images Row
@@ -2700,7 +2704,7 @@ const handleGetSelectedPeak = () => {
         setCalibrationLoading(true);
         try {
           const response = await axios.post(
-            "http://localhost/calibrate/",
+            apiUrl("/calibrate/"),
             payload,
             { headers: { "Content-Type": "application/json" }, timeout: 15000 }
           );

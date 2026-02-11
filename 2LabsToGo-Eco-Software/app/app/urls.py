@@ -21,6 +21,7 @@ from django.conf.urls import include
 from django.views.generic import TemplateView
 from django.urls import re_path
 from django.http import HttpResponse
+from .next_proxy import proxy_to_nextjs
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -32,6 +33,9 @@ urlpatterns = [
     path('', include('detection.urls')),
     path("healthz/", lambda r: HttpResponse("ok saasfjhsvhd", content_type="text/plain")),
     path("api/healthz/", lambda r: HttpResponse("ok django working", content_type="text/plain")),
+
+    # Serve Next.js through Django when accessing port 8000 directly.
+    re_path(r"^next/(?P<path>.*)$", proxy_to_nextjs),
 
 ]
 

@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeftIcon, ArrowRightIcon } from "@heroicons/react/24/outline"; // Import Heroicons
 import axios from 'axios';
@@ -8,13 +8,56 @@ import { fetchBandData } from "../api/extractBandApiSlice";
 import { AppDispatch } from "@/lib/store";
 import { unwrapResult } from '@reduxjs/toolkit';
 import { preprocessingOptions, PreprocessValue } from "@/features/analysis/quantTLC";
+import { apiUrl } from "@/utils/api";
 
 import DensitogramGraph from "@/components/charts/DensitogramGraph";
 import { PreprocessedOutput } from "@/utils/preprocessing";
 
+async function tiffFileToPngObjectUrl(file: File): Promise<string> {
+    // Loaded lazily into the client bundle; requires `utif` dependency.
+    const UTIF = (await import("utif")) as any;
+
+    const buffer = await file.arrayBuffer();
+    const ifds = UTIF.decode(buffer);
+    if (!ifds || ifds.length === 0) throw new Error("Invalid TIFF (no pages)");
+
+    UTIF.decodeImage(buffer, ifds[0]);
+    const rgba = UTIF.toRGBA8(ifds[0]);
+    const width = Number(ifds[0].width);
+    const height = Number(ifds[0].height);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        throw new Error("Invalid TIFF dimensions");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D context not available");
+
+    const imageData = new ImageData(new Uint8ClampedArray(rgba), width, height);
+    ctx.putImageData(imageData, 0, 0);
+
+    const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((b) => {
+            if (b) resolve(b);
+            else reject(new Error("Failed to render TIFF preview"));
+        }, "image/png");
+    });
+
+    return URL.createObjectURL(blob);
+}
+
+function isTiffFile(file: File): boolean {
+    const name = file.name.toLowerCase();
+    return name.endsWith(".tif") || name.endsWith(".tiff") || file.type === "image/tiff";
+}
+
 const Dashboard: React.FC = () => {
     const [images, setImages] = useState<File[]>([]);
+    const [previewUrls, setPreviewUrls] = useState<string[]>([]);
     const [currentIndex, setCurrentIndex] = useState(0);
+    const previewBuildIdRef = useRef(0);
     const router = useRouter()
     const dispatch = useDispatch<AppDispatch>()
 
@@ -57,6 +100,21 @@ const Dashboard: React.FC = () => {
             if (alertTimer) window.clearTimeout(alertTimer);
         };
     }, [alertTimer]);
+
+    useEffect(() => {
+        // Cleanup blob URLs to avoid memory leaks
+        return () => {
+            for (const url of previewUrls) {
+                if (typeof url === "string" && url.startsWith("blob:")) {
+                    try {
+                        URL.revokeObjectURL(url);
+                    } catch {
+                        // ignore
+                    }
+                }
+            }
+        };
+    }, [previewUrls]);
 
     const notify = (type: 'warning' | 'error' | 'success', message: string) => {
         setUiAlert({ type, message });
@@ -146,59 +204,64 @@ const Dashboard: React.FC = () => {
 
 
     
-    const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files) {
-        const files = Array.from(event.target.files);
+    const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const files = event.target.files ? Array.from(event.target.files) : [];
         setImages(files);
-        setCurrentIndex(0); // Reset to first image
+        setCurrentIndex(0);
 
-        // Save images to local storage
-        files.forEach((file, index) => {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                const base64String = reader.result as string;
-                // Store image data with a unique key
-                localStorage.setItem(`chromatogram_image_${index}`, base64String);
-            };
-            reader.readAsDataURL(file);
+        // Invalidate any in-flight preview generation
+        const buildId = ++previewBuildIdRef.current;
+
+        // Revoke old previews immediately
+        setPreviewUrls((prev) => {
+            for (const url of prev) {
+                if (typeof url === "string" && url.startsWith("blob:")) {
+                    try {
+                        URL.revokeObjectURL(url);
+                    } catch {
+                        // ignore
+                    }
+                }
+            }
+            return [];
         });
 
-        // Store the number of images
-        localStorage.setItem('chromatogram_image_count', files.length.toString());
-    }
-};
+        if (files.length === 0) return;
 
-// Add this function to load images from local storage on component mount
-const loadImagesFromLocalStorage = () => {
-    const imageCount = localStorage.getItem('chromatogram_image_count');
-    if (imageCount) {
-        const count = parseInt(imageCount);
-        const loadedImages: File[] = [];
-        
-        for (let i = 0; i < count; i++) {
-            const imageData = localStorage.getItem(`chromatogram_image_${i}`);
-            if (imageData) {
-                // Convert base64 to File object
-                const byteString = atob(imageData.split(',')[1]);
-                const mimeString = imageData.split(',')[0].split(':')[1].split(';')[0];
-                const ab = new ArrayBuffer(byteString.length);
-                const ia = new Uint8Array(ab);
-                for (let j = 0; j < byteString.length; j++) {
-                    ia[j] = byteString.charCodeAt(j);
+        try {
+            const urls: string[] = [];
+            for (const file of files) {
+                if (isTiffFile(file)) {
+                    try {
+                        urls.push(await tiffFileToPngObjectUrl(file));
+                        continue;
+                    } catch (e) {
+                        console.warn("TIFF preview failed; falling back to browser preview", e);
+                    }
                 }
-                const blob = new Blob([ab], { type: mimeString });
-                const file = new File([blob], `image_${i}.jpg`, { type: mimeString });
-                loadedImages.push(file);
+                urls.push(URL.createObjectURL(file));
             }
-        }
-        setImages(loadedImages);
-    }
-};
 
-// Add useEffect to load images when component mounts
-useEffect(() => {
-    loadImagesFromLocalStorage();
-}, []);
+            // If a newer selection happened while we were processing, discard.
+            if (buildId !== previewBuildIdRef.current) {
+                for (const url of urls) {
+                    if (typeof url === "string" && url.startsWith("blob:")) {
+                        try {
+                            URL.revokeObjectURL(url);
+                        } catch {
+                            // ignore
+                        }
+                    }
+                }
+                return;
+            }
+
+            setPreviewUrls(urls);
+        } catch (e) {
+            console.error("Failed to generate previews", e);
+            notify('warning', 'Preview generation failed for one or more images.');
+        }
+    };
 
     const nextImage = () => {
         setCurrentIndex((prevIndex) => (prevIndex + 1) % images.length);
@@ -224,7 +287,7 @@ useEffect(() => {
           const response = unwrapResult(resultAction);
       
           if (response) {
-            const fullImageUrl = `http://localhost:8000${response.image_url}`;
+                        const fullImageUrl = apiUrl(String(response.image_url ?? ""));
             
             const queryParams = new URLSearchParams();
             queryParams.append('image', fullImageUrl);
@@ -325,11 +388,17 @@ useEffect(() => {
 
                         {/* Image Container */}
                         <div className="flex justify-center items-center w-full max-w-3xl overflow-x-auto">
-                            <img
-                                src={URL.createObjectURL(images[currentIndex])}
-                                alt={`Selected ${currentIndex}`}
-                                className="w-full h-auto max-h-[500px] rounded-lg shadow-lg object-contain"
-                            />
+                            {previewUrls[currentIndex] ? (
+                                <img
+                                    src={previewUrls[currentIndex]}
+                                    alt={`Selected ${currentIndex}`}
+                                    className="w-full h-auto max-h-[500px] rounded-lg shadow-lg object-contain"
+                                />
+                            ) : (
+                                <div className="w-full text-center text-sm text-neutral-500">
+                                    Preview unavailable.
+                                </div>
+                            )}
                         </div>
 
                         <button 
@@ -402,7 +471,7 @@ useEffect(() => {
                         </div>
                         <div className="form-control">
                             <label className="label">
-                                <span className="label-text">Migration Front[mm]</span>
+                                <span className="label-text">Migration Front (mm)</span>
                             </label>
                             <input
                                 type="number"
@@ -478,7 +547,7 @@ useEffect(() => {
                         </div>
                         <div className="form-control">
                             <label className="label">
-                                <span className="label-text">Estimated Band Width (mm)</span>
+                                <span className="label-text">Track Width (mm)</span>
                             </label>
                             <input
                                 type="number"

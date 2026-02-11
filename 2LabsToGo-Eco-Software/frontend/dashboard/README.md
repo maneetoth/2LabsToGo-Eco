@@ -36,6 +36,14 @@ Go to project directory and run (make sure you have node installed first)
   npm install
   npm start
 ```
+
+Create a local env file (optional):
+
+```bash
+cp .env.template .env.local
+```
+
+Set `NEXT_PUBLIC_API_BASE_URL` in `.env.local` to point at your backend (defaults to `http://127.0.0.1:8000`).
     
 ## Core Libraries Used
 
