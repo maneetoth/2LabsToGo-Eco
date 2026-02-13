@@ -587,21 +587,21 @@ const [selectedPeakNew, setSelectedPeakNew] = useState<SelectedPeakState | null>
 
 const [advancedOptions, setAdvancedOptions] = useState({
   smoothing: {
-    windowSize: '',
-    polynomialOrder: '',
-    differentiationOrder: '',
+    windowSize: '15',
+    polynomialOrder: '2',
+    differentiationOrder: '0',
   },
   baseline: {
-    type: '',        // e.g., 'PEAK_DETECTION', 'ASLS', etc.
-    params: {} as Record<string, string>, // dynamic per type
+    type: 'ASLS',
+    params: { lam: '5', p: '0.05', max_iter: '20' } as Record<string, string>,
   },
   warping: {
-    method: '',        // 'DTW' | 'PTW'
-    referenceTrack: '',// optional if you need it
-    dtw: '',           // for DTW
-    ptw: '',           // for PTW (e.g., window/penalty)
-    degree: '',        // for PTW
-    seg_len: '',       // for PTW
+    method: 'PTW',
+    referenceTrack: '1',
+    dtw: '',
+    ptw: '1',
+    degree: '2',
+    seg_len: '100',
   },
 });
 console.log("advanced options ", advancedOptions);
@@ -670,7 +670,7 @@ const isSamePeakArray = (a?: any[], b?: any[]) => {
 
 const baselineDefaults: Record<string, Record<string, string>> = {
   IRLS: { lambda1: "", lambda2: "", wi: "", max_iter: "" },
-  ASLS: { lam: "", p: "", max_iter: "" },
+  ASLS: { lam: "5", p: "0.05", max_iter: "20" },
   MODPOLY: { degree: "", tol: "", max_iter: "" },
   FILLPEAKS: { lambda: "", hwi: "", it: "", int: "" },
   MEDIAN_WINDOW: { k_size: "", hws: "", end: "" },
@@ -684,8 +684,7 @@ const baselineDefaults: Record<string, Record<string, string>> = {
 
 const baselineTypes = Object.keys(baselineDefaults);
 
-// Only one method in your schema right now, keep dropdown for future growth
-const warpingMethods = ["DTW"];
+const warpingMethods = ["DTW", "PTW"];
 
 const coerce = (v: string) => {
   if (v === '' || v === undefined || v === null) return null;
