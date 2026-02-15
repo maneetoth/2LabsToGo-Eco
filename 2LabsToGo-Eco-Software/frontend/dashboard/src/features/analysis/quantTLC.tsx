@@ -50,6 +50,7 @@ export const preprocessingOptions = [
   { label: "Peak Inversion", labelShort: "Peak Inversion", value: "NegativePeakInversion" },
   { label: "Baseline", labelShort: "Baseline", value: "baseline" },
   { label: "Smoothing", labelShort: "Smoothing", value: "smoothing" },
+  { label: "Warping", labelShort: "Warping", value: "warping" },
 ] as const;
 
 export type PreprocessValue = typeof preprocessingOptions[number]["value"];
@@ -797,9 +798,14 @@ const buildPreprocessOption = () => {
 const handleSaveAdvancedOptions = async () => {
   try {
     // Normalize to backend step names
-    const preprocessOrder = selectedPreprocessing.map((v: PreprocessValue) => (v === 'smoothing' ? 'Smoothing' : v));
+    const preprocessOrder = selectedPreprocessing.map((v: PreprocessValue) =>
+      v === 'smoothing' ? 'Smoothing' : v === 'warping' ? 'Warping' : v
+    );
 
     const preprocessOption = buildPreprocessOption();
+    if (!selectedPreprocessing.includes('baseline')) delete (preprocessOption as any).baseline;
+    if (!selectedPreprocessing.includes('smoothing')) delete (preprocessOption as any).Smoothing;
+    if (!selectedPreprocessing.includes('warping')) delete (preprocessOption as any).Warping;
 
     // allTracks should be your raw densitogram input per track/channel
     // e.g., const allTracks: AllTracksInput = { "1": { red: [...], green: [...], ... }, ... }
@@ -1081,10 +1087,17 @@ console.log(currentEntry);
 const handlePreProcess = async () => {
   setPreprocessLoading(true);
   try {
-    const preprocessOrder = selectedPreprocessing;
+    const preprocessOrder = selectedPreprocessing.map((v: PreprocessValue) =>
+      v === 'smoothing' ? 'Smoothing' : v === 'warping' ? 'Warping' : v
+    );
     console.log(preprocessOrder);
-    
-    const data = await preprocessAllTracksAPI(bandData, preprocessOrder, {});
+
+    const preprocessOption = buildPreprocessOption();
+    if (!selectedPreprocessing.includes('baseline')) delete (preprocessOption as any).baseline;
+    if (!selectedPreprocessing.includes('smoothing')) delete (preprocessOption as any).Smoothing;
+    if (!selectedPreprocessing.includes('warping')) delete (preprocessOption as any).Warping;
+
+    const data = await preprocessAllTracksAPI(bandData, preprocessOrder, preprocessOption);
     // <- here you have the processed data (not a Promise)
     setPreprocessedData(data);
   } catch (e) {
@@ -3229,7 +3242,7 @@ const openSelectStandardModal = () => {
         <button className="btn btn-outline">Cancel</button>
       </form>
       <button className="btn btn-primary" onClick={handleSaveAdvancedOptions}>
-        Save
+        Apply
       </button>
     </div>
   </div>
