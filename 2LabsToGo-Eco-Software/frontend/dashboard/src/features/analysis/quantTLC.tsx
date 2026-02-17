@@ -1917,33 +1917,45 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!validateForm()) return;
   
-    // Get image from localStorage
-    const imageCount = localStorage.getItem('chromatogram_image_count');
-    if (!imageCount) {
-        console.error('No images found in localStorage');
-        return;
-    }
-    const currentIndex = 0; 
+    // Try to get the image from localStorage first; if missing, fallback to URL param.
+    let file: File | null = null;
+    const currentIndex = 0;
     const imageData = localStorage.getItem(`chromatogram_image_${currentIndex}`);
-    if (!imageData) {
-        console.error('Image not found in localStorage');
-        return;
-    }
 
-    // Convert base64 string back to File object
-    const byteString = atob(imageData.split(',')[1]);
-    const mimeString = imageData.split(',')[0].split(':')[1].split(';')[0];
-    const ab = new ArrayBuffer(byteString.length);
-    const ia = new Uint8Array(ab);
-    for (let i = 0; i < byteString.length; i++) {
-        ia[i] = byteString.charCodeAt(i);
+    if (imageData) {
+      const byteString = atob(imageData.split(',')[1]);
+      const mimeString = imageData.split(',')[0].split(':')[1].split(';')[0];
+      const ab = new ArrayBuffer(byteString.length);
+      const ia = new Uint8Array(ab);
+      for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i);
+      }
+      const blob = new Blob([ab], { type: mimeString });
+      file = new File([blob], `image_${currentIndex}.jpg`, { type: mimeString });
+    } else {
+      // Fallback: fetch the image by URL if provided in the query string
+      const urlFromQuery = searchParams.get("image");
+      if (urlFromQuery) {
+        try {
+          const resp = await fetch(urlFromQuery);
+          const blob = await resp.blob();
+          const mime = blob.type || 'image/png';
+          file = new File([blob], `image_${currentIndex}.png`, { type: mime });
+        } catch (err) {
+          console.error('Failed to fetch image from URL for Apply:', err);
+          notify('error', 'Unable to load image for processing.');
+          return;
+        }
+      } else {
+        console.error('No image found in localStorage or URL');
+        notify('error', 'No image available to process.');
+        return;
+      }
     }
-    const blob = new Blob([ab], { type: mimeString });
-    const file = new File([blob], `image_${currentIndex}.jpg`, { type: mimeString });
 
     // Create FormData and append file
     const uploadFormData = new FormData();
-    uploadFormData.append('image', file);
+    if (file) uploadFormData.append('image', file);
   
     // Append other form data
     (Object.keys(formData) as Array<keyof QuantFormData>).forEach((key) => {

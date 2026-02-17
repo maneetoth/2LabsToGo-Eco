@@ -271,38 +271,60 @@ const Dashboard: React.FC = () => {
         setCurrentIndex((prevIndex) => (prevIndex - 1 + images.length) % images.length);
     };
 
-    const handleQuantTLC = async () => {
-        if (!validateForm()) return;
-      
-        setIsLoading(true);
-        const uploadFormData = new FormData();
-        uploadFormData.append('image', images[currentIndex]);
-      
-                (Object.keys(formData) as Array<keyof DashboardFormData>).forEach((key) => {
-                        uploadFormData.append(String(key), formData[key]);
-                });
-      
-        try {
-          const resultAction = await dispatch(fetchBandData(uploadFormData));
-          const response = unwrapResult(resultAction);
-      
-          if (response) {
-                        const fullImageUrl = apiUrl(String(response.image_url ?? ""));
-            
-            const queryParams = new URLSearchParams();
-            queryParams.append('image', fullImageUrl);
-            (Object.keys(formData) as Array<keyof DashboardFormData>).forEach((key) => {
-                queryParams.append(String(key), formData[key]);
-            });
+        const handleQuantTLC = async () => {
+                if (!validateForm()) return;
+                setIsLoading(true);
 
-            router.push(`/analysis/quant?${queryParams.toString()}`);
-          }
+                const imageFile = images[currentIndex];
+
+                // Persist the current image in localStorage for the analysis screen.
+                // This matches the keys that the analysis page expects.
+                const toBase64 = (file: File) =>
+                    new Promise<string>((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(String(reader.result));
+                        reader.onerror = (e) => reject(e);
+                        reader.readAsDataURL(file);
+                    });
+
+                try {
+                    const b64 = await toBase64(imageFile);
+                    localStorage.setItem('chromatogram_image_count', '1');
+                    localStorage.setItem('chromatogram_image_0', b64);
+                } catch (_) {
+                    // If base64 conversion fails, continue; the analysis page will try a fallback.
+                }
+
+                const uploadFormData = new FormData();
+                uploadFormData.append('image', imageFile);
+                (Object.keys(formData) as Array<keyof DashboardFormData>).forEach((key) => {
+                    uploadFormData.append(String(key), formData[key]);
+                });
+
+                try {
+                    const resultAction = await dispatch(fetchBandData(uploadFormData));
+                    const response = unwrapResult(resultAction);
+
+                    if (response) {
+                        // If backend does not provide an image URL, still proceed — analysis uses base64/localStorage.
+                        const fullImageUrl = apiUrl(String(response.image_url ?? ""));
+
+                        const queryParams = new URLSearchParams();
+                        if (fullImageUrl) queryParams.append('image', fullImageUrl);
+                        (Object.keys(formData) as Array<keyof DashboardFormData>).forEach((key) => {
+                            queryParams.append(String(key), formData[key]);
+                        });
+
+                        // Respect Next.js basePath so navigation stays on the same origin via Nginx.
+                        const basePath = (router as any).basePath || "";
+                        router.push(`${basePath}/analysis/quant?${queryParams.toString()}`);
+                    }
                 } catch (err) {
                     notify('error', `Raw densitogram API failed: ${getApiErrorMessage(err)}`);
-        } finally {
-          setIsLoading(false);
-        }
-      };
+                } finally {
+                    setIsLoading(false);
+                }
+            };
 
     // Update: handle input change for each field, with special handling for estimated_band_width_mm
     const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {

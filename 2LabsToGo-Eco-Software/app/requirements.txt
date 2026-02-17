@@ -7,8 +7,8 @@ joblib
 scipy
 pybaselines
 matplotlib
-numpy
-opencv-python
+numpy == 1.24.3
+pandas == 2.0.3
 seaborn  
 scikit-learn
 imageio
