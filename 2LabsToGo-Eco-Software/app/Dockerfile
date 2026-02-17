@@ -2,6 +2,13 @@
 # Use the existing base image
 FROM ocmanager/ocmanager4:arm64
 
+# Install system dependencies for OpenCV
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set the working directory
 WORKDIR /app
 
@@ -9,7 +16,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
 # Install dependencies
-RUN pip install --no-cache-dir opencv-python-headless -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the app code
 COPY . /app
