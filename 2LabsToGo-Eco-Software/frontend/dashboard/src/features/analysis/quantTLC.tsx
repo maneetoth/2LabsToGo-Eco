@@ -473,6 +473,9 @@ const [densitogramData, setDensitogramData] = useState<{ hRF: number; raw: numbe
 const [filter, setFilter] = useState("");
 // ...existing code...
 const [selectedStandards, setSelectedStandards] = useState<Record<string, boolean>>({});
+// Per-track toggle to include/exclude a track from calibration (standards + unknowns).
+// Default is true when a key is absent.
+const [tracksToCalibrate, setTracksToCalibrate] = useState<Record<string, boolean>>({});
 // ...existing code...
 const [selectedBandData, setSelectedBandData] = useState<[number] | null>(null);
 const [standardData, setStandardData] = useState<{ [channelName: string]: DataPoint[] }>({});
@@ -1697,6 +1700,16 @@ const toggleStandard = (track: string) => {
     [track]: !prev[track],
   }));
 };
+
+const toggleTrackToCalibrate = (track: string) => {
+  setTracksToCalibrate((prev) => {
+    const current = Object.prototype.hasOwnProperty.call(prev, track) ? prev[track] : true;
+    return {
+      ...prev,
+      [track]: !current,
+    };
+  });
+};
 // ...existing code...
 const togglePreprocessing = (value: PreprocessValue) => {
   setSelectedPreprocessing(prev =>
@@ -1742,7 +1755,9 @@ const known_peaks = selectedTracks
   .filter((v): v is number => v !== null);
 
   const allTrackIndices = Array.from({ length: totalTracks }, (_, i) => i);
-  const unknownIndices = allTrackIndices.filter(i => !selectedTracks.includes(`band-${i}`));
+  const unknownIndices = allTrackIndices.filter(
+    (i) => !selectedTracks.includes(`band-${i}`) && (tracksToCalibrate[`band-${i}`] ?? true)
+  );
   
   // Build aligned pairs and type-narrow to numbers
   const unknownPairs = unknownIndices
@@ -2445,7 +2460,7 @@ const handleDownloadReport = async () => {
       .map((k) => Number.parseInt(k.replace("band-", ""), 10))
       .filter((n) => Number.isFinite(n));
     const unknownTrackIndicesForReport = Array.from({ length: totalTracks }, (_, i) => i).filter(
-      (i) => !standardTrackIndicesForReport.includes(i)
+      (i) => !standardTrackIndicesForReport.includes(i) && (tracksToCalibrate[`band-${i}`] ?? true)
     );
 
     const resultRows = calibrationResult.predictions.concentrations.map((conc, idx) => {
@@ -2579,10 +2594,24 @@ const handleGetSelectedPeak = () => {
     console.warn("No standards selected. Please select at least one standard.");
     notify('warning', 'No standards selected. Please select at least one standard.');
   } else {
+    const isTrackEnabled = (trackIndex: number) => tracksToCalibrate[`band-${trackIndex}`] ?? true;
+
     // Get the selected standard track indices (0-based)
-    const standardTrackIndices = selectedKeys
-      .map((k) => parseInt(k.replace("band-", ""), 10))
+    const standardKeysEnabled = selectedKeys.filter((k) => {
+      const idx = Number.parseInt(k.replace("band-", ""), 10);
+      return Number.isFinite(idx) && isTrackEnabled(idx);
+    });
+
+    const standardTrackIndices = standardKeysEnabled
+      .map((k) => Number.parseInt(k.replace("band-", ""), 10))
       .filter((n) => Number.isFinite(n));
+
+    if (standardTrackIndices.length === 0) {
+      console.warn("No enabled standards selected for calibration.");
+      notify('warning', 'No enabled standards selected for calibration. Check “To calibrate?”.');
+      prevSelectedPeakRef.current = clone(curr);
+      return;
+    }
 
     /**
      * Check if the selected peak is present within threshold in all selected standard tracks.
@@ -2681,20 +2710,29 @@ const handleGetSelectedPeak = () => {
     } else {
       const getIdx = (k: string) => parseInt(k.replace("band-", ""), 10);
 
-      // Known concentrations: always use the quantity entered by user in the field
-      const known_conc_local = selectedKeys
-        .map((k) => autoPeakValues[getIdx(k)])
-        .filter((v): v is number => Number.isFinite(v));
-         // Debug: log the selected standards and their values
-      
-      // Known peaks: use either area or height based on quantityMetric
-      // quantityValues already contains the correct metric from recalcQuantityValues
-      const known_peaks_local = selectedKeys
-        .map((k) => quantityValues[getIdx(k)])
-        .filter((v): v is number => Number.isFinite(v));
+      // Known concentrations + peaks must stay aligned (same ordering/length).
+      // Use only standards that are enabled for calibration.
+      const knownPairs = standardKeysEnabled
+        .map((k) => {
+          const idx = getIdx(k);
+          return {
+            conc: autoPeakValues[idx],
+            peak: quantityValues[idx],
+          };
+        })
+        .filter(
+          (p): p is { conc: number; peak: number } =>
+            Number.isFinite(p.conc) && Number.isFinite(p.peak)
+        );
+
+      const known_conc_local = knownPairs.map((p) => p.conc);
+      const known_peaks_local = knownPairs.map((p) => p.peak);
 
       const allIdx = Array.from({ length: totalTracks }, (_, i) => i);
-      const unknownIdx = allIdx.filter((i) => !selectedKeys.includes(`band-${i}`));
+      // Unknowns are non-standards that are enabled for calibration.
+      const unknownIdx = allIdx.filter(
+        (i) => !selectedStandards[`band-${i}`] && isTrackEnabled(i)
+      );
 
       // Unknown peaks: use quantityValues (area or height based on metric) for non-standard tracks
       const unknown_peaks_local = unknownIdx
@@ -3653,7 +3691,8 @@ const openSelectStandardModal = () => {
   <thead>
     <tr>
       <th>Track</th>
-      <th>Select</th>
+      <th>Select Standard</th>
+      <th>To calibrate?</th>
       <th>Quantity</th>
       {selectedPeak?.channel && (
         <>
@@ -3668,6 +3707,7 @@ const openSelectStandardModal = () => {
   <tbody>
     {Array.from({ length: totalTracks }).map((_, rowIndex) => {
       const isSelected = selectedStandards[`band-${rowIndex}`] || false;
+      const isToCalibrate = tracksToCalibrate[`band-${rowIndex}`] ?? true;
 
       return (
         <tr key={`band-${rowIndex}`}>
@@ -3679,6 +3719,15 @@ const openSelectStandardModal = () => {
               className="checkbox"
               checked={isSelected}
               onChange={() => toggleStandard(`band-${rowIndex}`)}
+            />
+          </td>
+
+          <td>
+            <input
+              type="checkbox"
+              className="checkbox"
+              checked={isToCalibrate}
+              onChange={() => toggleTrackToCalibrate(`band-${rowIndex}`)}
             />
           </td>
 
