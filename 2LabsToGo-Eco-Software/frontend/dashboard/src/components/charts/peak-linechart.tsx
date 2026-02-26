@@ -546,7 +546,7 @@ useEffect(() => {
         .attr("cx", newX(peak.x))
         .attr("cy", y(peak.y))
         .attr("r", 6)
-        .attr("fill", idx === selectedPeakIdx ? "orange" : "gold")
+        .attr("fill", idx === selectedPeakIdx ? "orange" : "blue")
         .attr("stroke", "#fff")
         .attr("stroke-width", 1.5)
         .style("cursor", "pointer")

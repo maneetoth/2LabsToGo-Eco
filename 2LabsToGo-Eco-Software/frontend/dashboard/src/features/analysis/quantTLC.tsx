@@ -1996,7 +1996,7 @@ const handleQuantTLC = async (e: React.FormEvent<HTMLFormElement>) => {
         // if (response) {
         //     // Update marked image URL from response
         //     const fullImageUrl = apiUrl(String(response.image_url ?? ""));
-        //     const markedImg = document.querySelector('img[alt="Quant TLC Image"]') as HTMLImageElement;
+        //     const markedImg = document.querySelector('img[alt="quanTLC Image"]') as HTMLImageElement;
         //     if (markedImg) {
         //         markedImg.src = fullImageUrl;
         //     }
@@ -2182,7 +2182,7 @@ const handleDownloadReport = async () => {
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(20);
     doc.setFont("helvetica", "bold");
-    doc.text("QUANT TLC ANALYSIS REPORT", margin, 17);
+    doc.text("quanTLC ANALYSIS REPORT", margin, 17);
     
     doc.setFontSize(10);
     doc.setFont("helvetica", "normal");
@@ -2215,6 +2215,40 @@ const handleDownloadReport = async () => {
   const calibrationChannelLabel = selectedPeak?.channel ? String(selectedPeak.channel) : "-";
   doc.text(`Calibration Channel: ${calibrationChannelLabel}`, margin + 120, y);
   y += 10;
+
+  // Plate/track form settings (2-column table)
+  const formatFormVal = (v: unknown) => {
+    if (v === null || v === undefined) return "-";
+    const s = String(v).trim();
+    return s === "" ? "-" : s;
+  };
+
+  const formRows = [
+    ["Plate Length (mm)", formatFormVal((formData as any)?.real_width_mm)],
+    ["Plate Width (mm)", formatFormVal((formData as any)?.real_height_mm)],
+    ["Distance to Lower Edge", formatFormVal((formData as any)?.crop_bottom_mm)],
+    ["Migration Front (mm)", formatFormVal((formData as any)?.crop_top_mm)],
+    ["First Application (mm)", formatFormVal((formData as any)?.first_band_mm)],
+    ["Track Spacing (mm)", formatFormVal((formData as any)?.band_spacing_mm)],
+    ["Number of Bands", formatFormVal((formData as any)?.num_bands)],
+    ["Band Width (mm)", formatFormVal((formData as any)?.estimated_band_width_mm)],
+  ];
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Parameter", "Value"]],
+    body: formRows,
+    theme: "striped",
+    headStyles: { fillColor: accentColor },
+    styles: { fontSize: 9 },
+    columnStyles: {
+      0: { cellWidth: 80 },
+      1: { cellWidth: pageWidth - margin * 2 - 80 },
+    },
+    margin: { left: margin, right: margin },
+  });
+
+  y = (doc as any).lastAutoTable.finalY + 12;
 
   // Images Row
   const imgWidth = (pageWidth - (margin * 3)) / 2;
@@ -2863,7 +2897,7 @@ const openSelectStandardModal = () => {
                     <span>No densitogram data loaded. Please correct values and click Apply.</span>
                   </div>
                 )}
-                <h1 className="text-2xl font-bold mb-4">Quant TLC - Densitogram</h1>
+                <h1 className="text-2xl font-bold mb-4">quanTLC</h1>
 
             {/* Step Indicator */}
             <ul className="steps steps-vertical lg:steps-horizontal w-full max-w-3xl mb-6">
@@ -2885,7 +2919,7 @@ const openSelectStandardModal = () => {
         {/* Image */}
         <img
             src={markedImg}
-            alt="Quant TLC Image"
+            alt="quanTLC Image"
             className="w-full h-[200px] max-w-2xl rounded-lg shadow-lg"
             />
     </div>
@@ -2914,7 +2948,7 @@ const openSelectStandardModal = () => {
     {data && (
       <img
       src={imgSrc}
-        alt="Quant TLC band Image"
+        alt="quanTLC band Image"
         className="w-full max-w-lg rounded-lg shadow-lg"
       />
     )}
@@ -3651,7 +3685,7 @@ const openSelectStandardModal = () => {
     {data && (
       <img
         src={imgSrc}
-        alt="Quant TLC Image"
+        alt="quanTLC Image"
         className="w-full max-w-lg rounded-lg shadow-lg"
       />
     )}
