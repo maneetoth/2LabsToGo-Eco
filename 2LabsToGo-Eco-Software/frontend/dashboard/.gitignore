@@ -53,3 +53,17 @@ next-env.d.ts
 *.log
 local_settings.py
 db.sqlite3
+
+# images 
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.tif
+*.bmp
+*.svg
+
+# download  folder 
+/download/
+/download/*
+/output_bands/*

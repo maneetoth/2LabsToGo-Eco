@@ -1,0 +1,21 @@
+# images 
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.tif
+*.bmp
+*.svg
+
+# download  folder 
+/download/
+/download/*
+/output_bands/
+
+
+*.xlsx
+*.xlsm
+*.csv
+*.zip
+
+/.venv/
