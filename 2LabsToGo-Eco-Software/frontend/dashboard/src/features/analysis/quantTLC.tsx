@@ -1477,7 +1477,7 @@ console.log('allPeaksOverAllData',allPeaksOverAllData);
 
  // Get the image URL for the given bandStep
  const bandKey = String(bandStep); // Ensure it's a string for object key lookup
- const imageUrlBand = bandData[bandKey]?.image_url;
+ const imageUrlBand = bandData?.[bandKey]?.image_url;
 
  console.log('ib',imageUrlBand);
 
