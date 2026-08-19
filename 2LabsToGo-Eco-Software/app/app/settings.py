@@ -53,9 +53,10 @@ INSTALLED_APPS = [
     'channels',
     'detection',
     'sampleapp',
+    'rtlc',
     'development',
     # 'derivatization',
-    # 'evaluation',
+    # 'evaluation'i
     # 'analysis',
     # 'users',
     # 'users_api',
@@ -183,8 +184,7 @@ CHANNEL_LAYERS = {
     },
 }
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "app.settings")
+# os.environ.setdefault("DJANGO_SETTINGS_MODULE", "app.settings")
 
 # Models without primary keys, so they are being created automatically by Django
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
-

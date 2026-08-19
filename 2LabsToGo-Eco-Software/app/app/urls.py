@@ -29,6 +29,7 @@ urlpatterns = [
     path('', include('finecontrol.urls')),
     path('', include('connection.urls')),
     path('', include('sampleapp.urls')),
+    path('', include('rtlc.urls')),
     path('', include('development.urls')),
     path('', include('detection.urls')),
     path("healthz/", lambda r: HttpResponse("ok saasfjhsvhd", content_type="text/plain")),
