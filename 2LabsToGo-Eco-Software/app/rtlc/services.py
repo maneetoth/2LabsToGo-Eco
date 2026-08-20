@@ -1,7 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
-
+import json
 from django.conf import settings
 
 from ultralytics import FastSAM
@@ -47,6 +47,45 @@ MANUAL_FIELDS = (
 def resolve_device():
     return os.getenv("FASTSAM_DEVICE", "cpu")
 
+def _as_list(value):
+    """
+    Safely parses incoming values that might be a Python list, 
+    a JSON-encoded string array, or a comma-separated string.
+    """
+    if not value:
+        return None
+    
+    # If it's already a list, return it directly
+    if isinstance(value, list):
+        return value
+        
+    if isinstance(value, str):
+        value_stripped = value.strip()
+        
+        # Check if the string looks like a JSON array (e.g., '["Sugar", "Band2"]')
+        if value_stripped.startswith("[") and value_stripped.endswith("]"):
+            try:
+                parsed = json.loads(value_stripped)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if item]
+            except json.JSONDecodeError:
+                pass  # Fall back to standard string parsing if JSON loading fails
+                
+        # Otherwise, treat it as a comma-separated string and clean up extra quotes/brackets
+        items = []
+        for item in value.split(","):
+            cleaned = item.strip().strip('[]"\'')
+            if cleaned:
+                items.append(cleaned)
+                
+        return items if items else None
+        
+    return None
+
+def _as_string(value, default):
+    if value in (None, ""):
+        return default
+    return str(value)
 
 def _as_float(value, default):
     if value in (None, ""):

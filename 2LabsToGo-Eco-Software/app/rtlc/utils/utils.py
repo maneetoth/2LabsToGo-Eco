@@ -125,3 +125,5 @@ def apply_manual_override(manual_values: dict, num_bands: int, first_x: float, e
     updated["rectangle_width"] = band_width
 
     return updated
+
+

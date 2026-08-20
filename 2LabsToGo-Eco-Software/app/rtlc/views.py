@@ -1,12 +1,14 @@
 import logging
+from rest_framework.parsers import MultiPartParser, JSONParser
 
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
 from .api_validation import get_marking_values, validate_uploaded_images
-from .services import analyze_single_image, extract_single_image
+from .services import analyze_single_image, extract_single_image, _as_int, _as_list, _as_string
 
+from .utils.clustering import perform_clustering
 
 LOGGER = logging.getLogger(__name__)
 
@@ -133,3 +135,43 @@ def extract_bands(request):
         errors,
         total_images=len(uploaded_files),
     )
+
+@api_view(["POST"])
+@parser_classes([MultiPartParser, JSONParser])
+def make_clusters(request):
+    data = request.data  
+    model_weights_path = data.get(
+        "model_weights_path", 
+        "./models/autoencoder_300.pkl"
+    )
+    name_of_img_dir = _as_list(data.get("name_of_images"))
+    clustering_dims = int(data.get("clustering_dimentions", 3))
+    file_name = data.get("clustering_file_name", None)
+
+    try:
+        perform_clustering(
+            model_weights_path=model_weights_path,
+            name_of_images=name_of_img_dir,
+            dimentions=clustering_dims,
+            cluster_file_name=file_name
+        )
+        
+        return Response(
+            {
+                "status": "success",
+                "message": f"Clustering dashboard generated successfully as {file_name}.html",
+                "cluster_file_name": file_name,
+                "cluster_url": f"/media/clusters/{file_name}.html",
+            },
+            status=200,
+        )
+        
+    except Exception:
+        LOGGER.exception("Failed to perform clustering for files.")
+        return Response(
+            {
+                "status": "error",
+                "message": "Unable to perform clustering.",
+            },
+            status=500,
+        )
