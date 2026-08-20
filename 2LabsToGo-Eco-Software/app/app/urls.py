@@ -40,8 +40,19 @@ urlpatterns = [
 
 ]
 
-
+if settings.DEBUG:
+    # Serve /media/ with X-Frame-Options exempted so it can be embedded
+    # in the Shiny app's iframe (different port = different origin).
+    urlpatterns += [
+        re_path(
+            r'^media/(?P<path>.*)$',
+            xframe_options_exempt(serve),
+            {'document_root': settings.MEDIA_ROOT},
+        ),
+    ]
+"""
 if settings.DEBUG:
     urlpatterns += static(
             settings.MEDIA_URL,
             document_root=settings.MEDIA_ROOT)
+"""
