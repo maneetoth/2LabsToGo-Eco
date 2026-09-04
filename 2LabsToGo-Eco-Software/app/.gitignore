@@ -1,22 +1,42 @@
-# Python bytecode
-**/__pycache__/
+# ==============================
+# Python Cache and Bytecode
+# ==============================
+__pycache__/
 *.py[cod]
 *$py.class
-__pycache__/
-*.pyc
 
-os
-sys
-# Django specific (if you are using Django)
+# ==============================
+# Virtual Environments & IDEs
+# ==============================
+venv/
+.venv/
+env/
+.idea/
+.vscode/
+
+# ==============================
+# System & Personal Configs
+# ==============================
+.bash_profile
+.bashrc
+.gitconfig
+.profile
+.ripgreprc
+.zprofile
+.zshrc
+.mcp.json
+
+# ==============================
+# Django Specific
+# ==============================
 *.log
 local_settings.py
 db.sqlite3
 
-
-# rtlc app files
+# ==============================
+# Models & Large Datasets
+# ==============================
 models/autoencoder_100.pkl
 models/autoencoder_200.pkl
 models/autoencoder_300.zip
 models/FastSAM-s.pt
-rtlc/__pycache__
-rtlc/utils/__pycache__

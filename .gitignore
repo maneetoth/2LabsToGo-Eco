@@ -1,0 +1,17 @@
+# System and Personal Configs
+.bash_profile
+.bashrc
+.gitconfig
+.profile
+.ripgreprc
+.zprofile
+.zshrc
+.mcp.json
+
+# Environments and IDEs
+.venv/
+.idea/
+.vscode/
+.idea
+.vscode
+.gitmodules
