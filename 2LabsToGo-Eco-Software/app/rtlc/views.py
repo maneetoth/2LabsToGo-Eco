@@ -145,15 +145,17 @@ def make_clusters(request):
         "./models/autoencoder_300.pkl"
     )
     name_of_img_dir = _as_list(data.get("name_of_images"))
-    clustering_dims = int(data.get("clustering_dimentions", 3))
-    file_name = data.get("clustering_file_name", None)
-
+    clustering_dims = _as_int(data.get("clustering_dimentions"), 3)
+    file_name = _as_string(data.get("clustering_file_name"), None)
+    labeling_method = _as_string(data.get("label_method"), "kmeans")
+    print("[INFO] labeling mehtod", labeling_method)
     try:
         perform_clustering(
             model_weights_path=model_weights_path,
             name_of_images=name_of_img_dir,
             dimentions=clustering_dims,
-            cluster_file_name=file_name
+            cluster_file_name=file_name,
+            cluster_label_method=labeling_method
         )
         
         return Response(

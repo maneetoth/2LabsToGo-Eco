@@ -16,11 +16,12 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from django.conf import settings
-from django.conf.urls.static import static
 from django.conf.urls import include
 from django.views.generic import TemplateView
 from django.urls import re_path
 from django.http import HttpResponse
+from django.views.static import serve
+from django.views.decorators.clickjacking import xframe_options_exempt
 from .next_proxy import proxy_to_nextjs
 
 urlpatterns = [

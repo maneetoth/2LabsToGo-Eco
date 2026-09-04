@@ -6,7 +6,7 @@ from PIL import Image
 from rest_framework.response import Response
 
 
-MAX_IMAGE_SIZE_BYTES = 25 * 1024 * 1024
+MAX_IMAGE_SIZE_BYTES = 300 * 1024 * 1024
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 MARKING_FIELDS = {
     "num_bands",

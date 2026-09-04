@@ -46,6 +46,12 @@ app_ui = ui.page_fluid(
                 "Cluster ALL extracted images (ignore current upload)",
                 value=False,
             ),
+            ui.input_radio_buttons(
+                "label_method",
+                "Cluster Labeling Method",
+                choices={"kmeans": "KMeans (unsupervised)", "name": "By source folder name"},
+                selected="kmeans",
+            ),
             ui.input_action_button("cluster_btn", "Make Clusters", class_="btn-success"),
             ui.output_text_verbatim("cluster_status"),
         ),
@@ -316,6 +322,7 @@ def server(input, output, session):
                 "name_of_images": image_names,
                 "clustering_dimentions": input.clustering_dimensions(),
                 "clustering_file_name": input.clustering_file_name(),
+                "label_method": input.label_method(),
             }
 
             response = requests.post(f"{DJANGO_API_URL}/make_clusters/", json=payload)
