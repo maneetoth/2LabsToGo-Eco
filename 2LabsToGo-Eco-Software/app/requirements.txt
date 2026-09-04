@@ -13,3 +13,9 @@ seaborn
 scikit-learn
 imageio
 scipy
+torch<2.6
+torchvision<0.21
+ultralytics==8.2.40
+opencv-python
+Pillow
+plotly

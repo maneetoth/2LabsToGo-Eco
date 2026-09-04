@@ -1,4 +1,6 @@
 import logging
+import os
+from pathlib import Path as PyPath
 from rest_framework.parsers import MultiPartParser, JSONParser
 
 from rest_framework.decorators import api_view, parser_classes
@@ -177,3 +179,21 @@ def make_clusters(request):
             },
             status=500,
         )
+
+
+@api_view(["GET"])
+def list_models(request):
+    """Return a list of available model weight files (.pkl, .pth) from the models directory."""
+    models_dir = PyPath(__file__).resolve().parent.parent / "models"
+    allowed_extensions = {".pkl", ".pth"}
+    models = []
+
+    if models_dir.is_dir():
+        for entry in sorted(models_dir.iterdir()):
+            if entry.is_file() and entry.suffix.lower() in allowed_extensions:
+                models.append({
+                    "name": entry.stem,
+                    "path": f"./models/{entry.name}",
+                })
+
+    return Response({"models": models}, status=200)
