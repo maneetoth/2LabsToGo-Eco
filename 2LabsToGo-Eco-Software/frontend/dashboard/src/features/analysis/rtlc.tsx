@@ -63,6 +63,11 @@ export default function RTLC() {
   const [analyzeErrors, setAnalyzeErrors] = useState<{ filename: string; error: string }[]>([]);
   const [analyzeApiError, setAnalyzeApiError] = useState<string | null>(null);
 
+  // Advanced settings state
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [selectedImageNameForAdvanced, setSelectedImageNameForAdvanced] = useState<string>("");
+  const [markingValues, setMarkingValues] = useState<Record<string, Record<string, number | "">>>({});
+
   // Step 2 state
   const [extracting, setExtracting] = useState(false);
   const [extractResults, setExtractResults] = useState<ExtractResult[]>([]);
@@ -78,9 +83,6 @@ export default function RTLC() {
   const [clusterUrl, setClusterUrl] = useState<string | null>(null);
   const [clusterError, setClusterError] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
-
-  // Advanced settings toggle
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // ── Load models when reaching step 3 ──────────────────────────────────
   useEffect(() => {
@@ -111,7 +113,13 @@ export default function RTLC() {
         src: URL.createObjectURL(file),
         id: Math.random().toString(36).substring(7),
       }));
-      setImages((prev) => [...prev, ...newImages]);
+      setImages((prev) => {
+        const updated = [...prev, ...newImages];
+        if (!selectedImageNameForAdvanced && updated.length > 0) {
+          setSelectedImageNameForAdvanced(updated[0].file.name);
+        }
+        return updated;
+      });
     }
   };
 
@@ -119,7 +127,13 @@ export default function RTLC() {
     setImages((prev) => {
       const img = prev.find((i) => i.id === idToRemove);
       if (img) URL.revokeObjectURL(img.src);
-      return prev.filter((i) => i.id !== idToRemove);
+      const updated = prev.filter((i) => i.id !== idToRemove);
+      
+      // If we removed the selected advanced image, pick another
+      if (img && img.file.name === selectedImageNameForAdvanced) {
+        setSelectedImageNameForAdvanced(updated.length > 0 ? updated[0].file.name : "");
+      }
+      return updated;
     });
   };
 
@@ -133,8 +147,14 @@ export default function RTLC() {
       src: URL.createObjectURL(file),
       id: Math.random().toString(36).substring(7),
     }));
-    setImages((prev) => [...prev, ...newImages]);
-  }, []);
+    setImages((prev) => {
+      const updated = [...prev, ...newImages];
+      if (!selectedImageNameForAdvanced && updated.length > 0) {
+        setSelectedImageNameForAdvanced(updated[0].file.name);
+      }
+      return updated;
+    });
+  }, [selectedImageNameForAdvanced]);
 
   // ── Step 1: Analyze ───────────────────────────────────────────────────
   const handleAnalyze = async () => {
@@ -150,13 +170,48 @@ export default function RTLC() {
     const formData = new FormData();
     images.forEach((img) => formData.append("image", img.file));
 
+    // Cleanup markingValues to only include non-empty fields
+    const cleanedMarkingValues: Record<string, any> = {};
+    for (const [filename, values] of Object.entries(markingValues)) {
+      const cleanedValues: Record<string, number> = {};
+      for (const [k, v] of Object.entries(values)) {
+        if (v !== "") cleanedValues[k] = Number(v);
+      }
+      if (Object.keys(cleanedValues).length > 0) {
+        cleanedMarkingValues[filename] = cleanedValues;
+      }
+    }
+    if (Object.keys(cleanedMarkingValues).length > 0) {
+      formData.append("marking_values", JSON.stringify(cleanedMarkingValues));
+    }
+
     try {
       const response = await axios.post("/api/rtlc/analyze_image/", formData, {
         withCredentials: true,
         headers: { "X-CSRFToken": csrftoken },
       });
-      setAnalyzeResults(response.data.results || []);
+      
+      const resData = response.data.results || [];
+      setAnalyzeResults(resData);
       setAnalyzeErrors(response.data.errors || []);
+      
+      // Update markingValues with detected results so they show up in advanced options
+      setMarkingValues((prev) => {
+        const next = { ...prev };
+        resData.forEach((res: AnalyzeResult) => {
+          const current = next[res.filename] || {};
+          const detected = res.summary || {};
+          next[res.filename] = {
+            num_bands: current.num_bands !== "" && current.num_bands !== undefined ? current.num_bands : detected.num_bands ?? "",
+            first_app_position: current.first_app_position !== "" && current.first_app_position !== undefined ? current.first_app_position : detected.first_app_position ?? "",
+            edge_cut: current.edge_cut !== "" && current.edge_cut !== undefined ? current.edge_cut : detected.edge_cut ?? "",
+            migration_front: current.migration_front !== "" && current.migration_front !== undefined ? current.migration_front : detected.migration_front ?? "",
+            band_spacing: current.band_spacing !== "" && current.band_spacing !== undefined ? current.band_spacing : detected.band_spacing ?? "",
+            band_width: current.band_width !== "" && current.band_width !== undefined ? current.band_width : detected.band_width ?? "",
+          };
+        });
+        return next;
+      });
     } catch (err: any) {
       const msg =
         err?.response?.data?.error ||
@@ -271,6 +326,8 @@ export default function RTLC() {
     setClusterUrl(null);
     setClusterError(null);
     setClusterName("");
+    setMarkingValues({});
+    setSelectedImageNameForAdvanced("");
   };
 
   // ── Render ────────────────────────────────────────────────────────────
@@ -442,34 +499,68 @@ export default function RTLC() {
                   </button>
                   {showAdvanced && (
                     <div className="mt-2 p-3 bg-base-200 rounded-lg">
-                      <p className="text-xs text-base-content/50 mb-2">
-                        Optional overrides for band detection. Leave empty for
-                        automatic detection.
-                      </p>
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                        {[
-                          "num_bands",
-                          "first_app_position",
-                          "edge_cut",
-                          "migration_front",
-                          "band_spacing",
-                          "band_width",
-                        ].map((field) => (
-                          <div key={field}>
-                            <label className="label py-0">
-                              <span className="label-text text-xs">
-                                {field.replace(/_/g, " ")}
-                              </span>
-                            </label>
-                            <input
-                              type="number"
-                              className="input input-bordered input-xs w-full"
-                              placeholder="auto"
-                              step="any"
-                            />
-                          </div>
-                        ))}
+                      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-3">
+                        <p className="text-xs text-base-content/50">
+                          Overrides apply per image. The values below are populated automatically after Analysis.
+                        </p>
+                        {images.length > 0 && (
+                          <select
+                            className="select select-bordered select-xs w-full sm:w-auto max-w-xs"
+                            value={selectedImageNameForAdvanced}
+                            onChange={(e) => setSelectedImageNameForAdvanced(e.target.value)}
+                          >
+                            {images.map((img) => (
+                              <option key={img.id} value={img.file.name}>
+                                {img.file.name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
+
+                      {images.length === 0 ? (
+                        <p className="text-sm text-center text-base-content/40 py-2">
+                          Please upload images first to use advanced settings.
+                        </p>
+                      ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                          {[
+                            "num_bands",
+                            "first_app_position",
+                            "edge_cut",
+                            "migration_front",
+                            "band_spacing",
+                            "band_width",
+                          ].map((field) => (
+                            <div key={field}>
+                              <label className="label py-0">
+                                <span className="label-text text-xs">
+                                  {field.replace(/_/g, " ")}
+                                </span>
+                              </label>
+                              <input
+                                type="number"
+                                className="input input-bordered input-xs w-full"
+                                placeholder="auto"
+                                step="any"
+                                value={
+                                  markingValues[selectedImageNameForAdvanced]?.[field] ?? ""
+                                }
+                                onChange={(e) => {
+                                  const val = e.target.value === "" ? "" : Number(e.target.value);
+                                  setMarkingValues((prev) => ({
+                                    ...prev,
+                                    [selectedImageNameForAdvanced]: {
+                                      ...(prev[selectedImageNameForAdvanced] || {}),
+                                      [field]: val,
+                                    },
+                                  }));
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -776,7 +867,7 @@ export default function RTLC() {
                         </svg>
                         <span>
                           No model weights found in <code>app/models/</code>.
-                          Add a <code>.pkl</code> or <code>.pth</code> file.
+                          Add a <code>.pkl</code>, <code>.pth</code> or <code>.pt</code> file.
                         </span>
                       </div>
                     )}

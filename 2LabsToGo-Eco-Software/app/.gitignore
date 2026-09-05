@@ -40,3 +40,11 @@ models/autoencoder_100.pkl
 models/autoencoder_200.pkl
 models/autoencoder_300.zip
 models/FastSAM-s.pt
+
+# ==============================
+# Media and Uploads
+# ==============================
+media/extracted_bands/
+media/marked_images/
+media/clusters/
+media/uploads/

@@ -183,9 +183,9 @@ def make_clusters(request):
 
 @api_view(["GET"])
 def list_models(request):
-    """Return a list of available model weight files (.pkl, .pth) from the models directory."""
+    """Return a list of available model weight files (.pkl, .pth, .pt) from the models directory."""
     models_dir = PyPath(__file__).resolve().parent.parent / "models"
-    allowed_extensions = {".pkl", ".pth"}
+    allowed_extensions = {".pkl", ".pth", ".pt"}
     models = []
 
     if models_dir.is_dir():
