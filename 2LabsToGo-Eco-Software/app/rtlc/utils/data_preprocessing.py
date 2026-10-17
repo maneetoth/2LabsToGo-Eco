@@ -3,7 +3,7 @@ import torch
 from PIL import Image
 import torchvision.transforms as T
 
-def get_inference_tensor(data_folder_path=None):
+def get_inference_tensor(data_folder_path=None, selected_bands=None):
     """
     Scans either a list of specific folder names (automatically prefixed with 
     the base path) or a default parent directory, transforms the images, 
@@ -33,16 +33,28 @@ def get_inference_tensor(data_folder_path=None):
         folder_paths = [os.path.join(base_dir, d) for d in sub_dirs]
         num_dirs = len(sub_dirs)
         
+    selected_bands = selected_bands or {}
+
     for folder_path in folder_paths:
         # Extract folder name for clean labeling in hover tooltips
         dir_name = os.path.basename(os.path.normpath(folder_path))
+        selected_indices = selected_bands.get(dir_name)
+        if selected_indices is not None:
+            selected_indices = {int(index) for index in selected_indices}
         
         if not os.path.exists(folder_path):
             print(f"Warning: Folder path {folder_path} does not exist. Skipping.")
             continue
             
-        for file_name in os.listdir(folder_path):
+        included_in_folder = 0
+        for file_name in sorted(os.listdir(folder_path)):
             if any(file_name.lower().endswith(ext) for ext in allowed_extensions):
+                try:
+                    band_index = int(os.path.splitext(file_name)[0])
+                except ValueError:
+                    continue
+                if selected_indices is not None and band_index not in selected_indices:
+                    continue
                 img_path = os.path.join(folder_path, file_name)
                 
                 try:
@@ -52,8 +64,13 @@ def get_inference_tensor(data_folder_path=None):
                     image_tensors.append(tensor)
                     # Save a clean identifier (folder/filename) for the hover label
                     image_names.append(os.path.join(dir_name, file_name))
+                    included_in_folder += 1
                 except Exception as e:
                     print(f"Could not load image {img_path}: {e}")
+        print(
+            f"[INFO] {dir_name}: selected "
+            f"{included_in_folder} bands"
+        )
 
     if image_tensors:
         input_tensor = torch.stack(image_tensors)

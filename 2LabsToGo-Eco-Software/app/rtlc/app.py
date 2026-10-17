@@ -41,10 +41,21 @@ app_ui = ui.page_fluid(
             ui.input_text("model_weights_path", "Model Weights Path", value="./models/autoencoder_300.pkl"),
             ui.input_numeric("clustering_dimensions", "Clustering Dimensions", value=3, min=1, step=1),
             ui.input_text("clustering_file_name", "Cluster File Name", value="cluster_output"),
-            ui.input_checkbox(
-                "cluster_all",
-                "Cluster ALL extracted images (ignore current upload)",
-                value=False,
+            ui.input_radio_buttons(
+                "cluster_selection_mode",
+                "Bands to cluster",
+                choices={"all": "Select all extracted bands", "manual": "Manual selection"},
+                selected="all",
+            ),
+            ui.panel_conditional(
+                "input.cluster_selection_mode == 'manual'",
+                ui.input_select("manual_band_image", "Image", choices={}),
+                ui.input_checkbox_group(
+                    "selected_band_indices",
+                    "Bands",
+                    choices={},
+                ),
+                ui.output_ui("manual_band_selector"),
             ),
             ui.input_radio_buttons(
                 "label_method",
@@ -68,6 +79,9 @@ def server(input, output, session):
     django_analysis_results = reactive.Value({})
     loading_state = reactive.Value(False)
     extract_status_value = reactive.Value({})
+    extracted_results_value = reactive.Value({})
+    selected_bands_value = reactive.Value({})
+    active_band_image = reactive.Value(None)
     cluster_status_value = reactive.Value({})
 
     DJANGO_API_URL = "http://127.0.0.1:8000/api/rtlc"
@@ -270,8 +284,55 @@ def server(input, output, session):
 
             if response.status_code == 200:
                 res_json = response.json()
+                extraction_map = {}
                 for item in res_json.get("results", []):
-                    extracted.append("Successfully processed and extracted bands via Django.")
+                    filename = item.get("filename", "unknown image")
+                    extraction_map[filename] = item
+                    extracted.append(
+                        f"{filename}: {item.get('num_bands_extracted', 0)} bands"
+                    )
+                extracted_results_value.set(extraction_map)
+                image_choices = {
+                    name: name
+                    for name in extraction_map
+                }
+                selected_bands_value.set({
+                    name: list(
+                        range(
+                            1,
+                            int(item.get("num_bands_extracted", 0)) + 1,
+                        )
+                    )
+                    for name, item in extraction_map.items()
+                })
+                active_band_image.set(next(iter(image_choices), None))
+                ui.update_select(
+                    "manual_band_image",
+                    choices=image_choices,
+                    selected=next(iter(image_choices), None),
+                )
+                selected_name = next(iter(image_choices), None)
+                selected_item = (
+                    extraction_map.get(selected_name)
+                    if selected_name is not None
+                    else None
+                )
+                band_count = int(
+                    selected_item.get("num_bands_extracted", 0)
+                    if selected_item
+                    else 0
+                )
+                ui.update_checkbox_group(
+                    "selected_band_indices",
+                    choices={
+                        str(index): f"Band {index}"
+                        for index in range(1, band_count + 1)
+                    },
+                    selected=[
+                        str(index)
+                        for index in range(1, band_count + 1)
+                    ],
+                )
             else:
                 errors.append(response.text)
         except Exception as exc:
@@ -284,6 +345,116 @@ def server(input, output, session):
                 "errors": errors,
             }
         )
+
+    @render.ui
+    def manual_band_selector():
+        extraction_map = extracted_results_value()
+        if not extraction_map:
+            return ui.p("Extract bands before choosing bands manually.")
+
+        selected_name = input["manual_band_image"]()
+        if selected_name not in extraction_map:
+            selected_name = next(iter(extraction_map))
+
+        extraction = extraction_map[selected_name]
+        band_count = int(extraction.get("num_bands_extracted", 0))
+        band_urls = extraction.get("band_urls", [])
+        links = []
+        for band_index in range(1, band_count + 1):
+            band_url = (
+                band_urls[band_index - 1]
+                if band_index <= len(band_urls)
+                else None
+            )
+            links.append(
+                ui.tags.div(
+                    ui.tags.a("view", href=band_url, target="_blank")
+                    if band_url
+                    else ui.tags.span(),
+                    class_="mb-1",
+                )
+            )
+
+        return ui.tags.div(
+            ui.tags.p(f"{selected_name}: {band_count} bands extracted"),
+            ui.tags.div(*links),
+        )
+
+    @reactive.effect
+    @reactive.event(input.manual_band_image)
+    def _update_band_choices():
+        extraction_map = extracted_results_value()
+        selected_name = input.manual_band_image()
+        if selected_name not in extraction_map:
+            return
+
+        previous_name = active_band_image()
+        if previous_name in extraction_map and previous_name != selected_name:
+            current = selected_bands_value().copy()
+            current[previous_name] = _selected_band_numbers(input.selected_band_indices())
+            selected_bands_value.set(current)
+
+        active_band_image.set(selected_name)
+        band_count = int(
+            extraction_map[selected_name].get("num_bands_extracted", 0)
+        )
+        selected_bands = selected_bands_value().get(
+            selected_name,
+            list(range(1, band_count + 1)),
+        )
+        ui.update_checkbox_group(
+            "selected_band_indices",
+            choices={
+                str(index): f"Band {index}"
+                for index in range(1, band_count + 1)
+            },
+            selected=[str(index) for index in selected_bands],
+        )
+
+    def _selected_band_numbers(raw_selected):
+        if not raw_selected:
+            return []
+        if isinstance(raw_selected, str):
+            raw_selected = [raw_selected]
+        return [int(index) for index in raw_selected]
+
+    def _build_manual_cluster_selection(extraction_map):
+        selections = selected_bands_value().copy()
+        active_name = active_band_image()
+        if active_name in extraction_map:
+            selections[active_name] = _selected_band_numbers(
+                input.selected_band_indices()
+            )
+
+        image_names = []
+        selected_bands = {}
+        for image_name, extraction in extraction_map.items():
+            band_count = int(extraction.get("num_bands_extracted", 0))
+            selected = selections.get(
+                image_name,
+                list(range(1, band_count + 1)),
+            )
+            folder_name = extraction.get("output_folder_name") or Path(
+                extraction.get("output_dir", Path(image_name).stem)
+            ).name
+            if selected:
+                image_names.append(folder_name)
+                selected_bands[folder_name] = selected
+        return image_names, selected_bands
+
+    @reactive.effect
+    @reactive.event(input.selected_band_indices)
+    def _save_band_choices():
+        selected_name = active_band_image()
+        if not selected_name:
+            return
+        selected = _selected_band_numbers(input.selected_band_indices())
+        stored = selected_bands_value().get(selected_name, [])
+        if selected == stored:
+            return
+        current = selected_bands_value().copy()
+        current[selected_name] = selected
+        selected_bands_value.set(current)
 
     @render.text
     def extract_status():
@@ -304,17 +475,48 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.cluster_btn)
     def _handle_clustering():
-        if input.cluster_all():
-            # Empty list tells the backend to scan every subfolder under
-            # ./media/extracted_bands/ instead of just the current upload.
-            image_names = []
-        else:
-            files = uploaded_files()
-            if not files:
-                cluster_status_value.set({"success": False, "message": "Please upload images first."})
+        extraction_map = extracted_results_value()
+        if not extraction_map:
+            cluster_status_value.set(
+                {"success": False, "message": "Extract bands before clustering."}
+            )
+            return
+
+        if input.cluster_selection_mode() == "all":
+            image_names = [
+                Path(
+                    extraction.get(
+                        "output_dir",
+                        Path(image_name).stem,
+                    )
+                ).name
+                for image_name, extraction in extraction_map.items()
+            ]
+            selected_bands = {}
+            if not image_names:
+                cluster_status_value.set(
+                    {"success": False, "message": "No extracted image bands are available."}
+                )
                 return
-            # Strip extensions (e.g., .tif) so names match the extracted folder structure precisely
-            image_names = [Path(f["name"]).stem for f in files]
+        else:
+            if input["manual_band_image"]() not in extraction_map:
+                cluster_status_value.set(
+                    {"success": False, "message": "Choose an extracted image."}
+                )
+                return
+
+            image_names, selected_bands = _build_manual_cluster_selection(
+                extraction_map
+            )
+
+            if not image_names:
+                cluster_status_value.set(
+                    {
+                        "success": False,
+                        "message": "Select at least one band.",
+                    }
+                )
+                return
 
         try:
             payload = {
@@ -323,15 +525,20 @@ def server(input, output, session):
                 "clustering_dimentions": input.clustering_dimensions(),
                 "clustering_file_name": input.clustering_file_name(),
                 "label_method": input.label_method(),
+                "selected_bands": selected_bands,
             }
 
             response = requests.post(f"{DJANGO_API_URL}/make_clusters/", json=payload)
 
             if response.status_code == 200:
                 res_json = response.json()
+                cluster_message = res_json.get(
+                    "message",
+                    "Clustering completed successfully!",
+                )
                 cluster_status_value.set({
                     "success": True,
-                    "message": res_json.get("message", "Clustering completed successfully!"),
+                    "message": cluster_message,
                     "cluster_url": res_json.get("cluster_url"),
                 })
             else:

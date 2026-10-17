@@ -236,6 +236,11 @@ def extract_single_image(uploaded_file, request, marking_values=None):
                 "band_spacings": calculate_band_spacings(result),
             },
             "output_dir": extraction["output_dir"],
+            "output_folder_name": (
+                Path(extraction["output_dir"]).name
+                if extraction["output_dir"]
+                else None
+            ),
         }
 
     finally:

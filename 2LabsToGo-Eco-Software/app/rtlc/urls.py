@@ -1,6 +1,8 @@
 from django.urls import path
 from .views import analyze_image, extract_bands, make_clusters, list_models
 
+app_name = "rtlc"
+
 urlpatterns = [
     path('api/rtlc/analyze_image/', analyze_image, name='analyze_image'),
     path('api/rtlc/extract_bands/', extract_bands, name='extract_bands'),

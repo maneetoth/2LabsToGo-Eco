@@ -150,22 +150,53 @@ def make_clusters(request):
     clustering_dims = _as_int(data.get("clustering_dimentions"), 3)
     file_name = _as_string(data.get("clustering_file_name"), None)
     labeling_method = _as_string(data.get("label_method"), "kmeans")
+    selected_bands = data.get("selected_bands") or {}
+    if not isinstance(selected_bands, dict):
+        return Response(
+            {"error": "selected_bands must be an object keyed by image folder."},
+            status=400,
+        )
+    try:
+        selected_bands = {
+            str(folder_name): [int(band_index) for band_index in band_indices]
+            for folder_name, band_indices in selected_bands.items()
+        }
+    except (TypeError, ValueError):
+        return Response(
+            {
+                "error": (
+                    "selected_bands must map each extracted folder name "
+                    "to a list of integer band indices."
+                )
+            },
+            status=400,
+        )
     print("[INFO] labeling mehtod", labeling_method)
     try:
-        perform_clustering(
+        clustered_band_count, clustered_image_count = perform_clustering(
             model_weights_path=model_weights_path,
             name_of_images=name_of_img_dir,
             dimentions=clustering_dims,
             cluster_file_name=file_name,
-            cluster_label_method=labeling_method
+            cluster_label_method=labeling_method,
+            selected_bands=selected_bands,
         )
         
         return Response(
             {
                 "status": "success",
-                "message": f"Clustering dashboard generated successfully as {file_name}.html",
+                "message": (
+                    f"Clustering dashboard generated successfully as {file_name}.html "
+                    f"using {clustered_band_count} selected bands from "
+                    f"{clustered_image_count} images. "
+                    f"Per-image counts: {', '.join(f'{name}={len(bands)}' for name, bands in selected_bands.items())}."
+                ),
                 "cluster_file_name": file_name,
                 "cluster_url": f"/media/clusters/{file_name}.html",
+                "selected_band_counts": {
+                    folder_name: len(band_indices)
+                    for folder_name, band_indices in selected_bands.items()
+                },
             },
             status=200,
         )
