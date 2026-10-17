@@ -1,6 +1,8 @@
 import logging
 import os
 from pathlib import Path as PyPath
+from urllib.parse import quote
+from django.conf import settings
 from rest_framework.parsers import MultiPartParser, JSONParser
 
 from rest_framework.decorators import api_view, parser_classes
@@ -13,6 +15,58 @@ from .services import analyze_single_image, extract_single_image, _as_int, _as_l
 from .utils.clustering import perform_clustering
 
 LOGGER = logging.getLogger(__name__)
+ALLOWED_BAND_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+
+
+def _extracted_bands_root():
+    return PyPath(settings.MEDIA_ROOT) / "extracted_bands"
+
+
+def _normalise_selected_bands(value):
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("selected_bands must be an object keyed by image folder.")
+
+    normalised = {}
+    for folder_name, band_indices in value.items():
+        if not isinstance(folder_name, str) or not folder_name.strip():
+            raise ValueError("Each selected_bands key must be an image folder name.")
+        if not isinstance(band_indices, (list, tuple)):
+            raise ValueError("Each selected_bands value must be a list of band indices.")
+        try:
+            indices = sorted({int(index) for index in band_indices})
+        except (TypeError, ValueError):
+            raise ValueError(
+                "selected_bands must map each image folder to integer band indices."
+            )
+        if any(index < 1 for index in indices):
+            raise ValueError("Band indices must be positive integers.")
+        normalised[folder_name] = indices
+    return normalised
+
+
+def _band_files(folder_name):
+    root = _extracted_bands_root().resolve()
+    folder = (root / folder_name).resolve()
+    if folder.parent != root or not folder.is_dir():
+        return None
+    files = {}
+    for path in folder.iterdir():
+        if path.is_file() and path.suffix.lower() in ALLOWED_BAND_EXTENSIONS:
+            try:
+                files[int(path.stem)] = path
+            except ValueError:
+                continue
+    return files
+
+
+def _band_url(request, folder_name, band_index):
+    relative_path = (
+        f"{settings.MEDIA_URL.rstrip('/')}/extracted_bands/"
+        f"{quote(folder_name)}/{quote(str(band_index))}.png"
+    )
+    return request.build_absolute_uri(relative_path)
 
 
 def _get_uploaded_files(request):
@@ -138,6 +192,69 @@ def extract_bands(request):
         total_images=len(uploaded_files),
     )
 
+
+@api_view(["GET"])
+def extracted_bands(request):
+    """Return extracted-band metadata for the production frontend."""
+    root = _extracted_bands_root()
+    results = []
+    if root.is_dir():
+        for folder in sorted(path for path in root.iterdir() if path.is_dir()):
+            bands = _band_files(folder.name) or {}
+            results.append(
+                {
+                    "image_folder": folder.name,
+                    "num_bands_extracted": len(bands),
+                    "bands": [
+                        {
+                            "index": index,
+                            "filename": path.name,
+                            "url": request.build_absolute_uri(
+                                f"{settings.MEDIA_URL.rstrip('/')}/"
+                                f"extracted_bands/{quote(folder.name)}/{quote(path.name)}"
+                            ),
+                        }
+                        for index, path in sorted(bands.items())
+                    ],
+                }
+            )
+    return Response({"results": results, "total_images": len(results)}, status=200)
+
+
+@api_view(["GET"])
+def datapoint(request):
+    """Return the source image and band URL represented by one cluster point."""
+    folder_name = request.query_params.get("image_folder", "").strip()
+    raw_band_index = request.query_params.get("band_index", "")
+    if not folder_name or not raw_band_index:
+        return Response(
+            {"error": "image_folder and band_index are required."},
+            status=400,
+        )
+    try:
+        band_index = int(raw_band_index)
+    except ValueError:
+        return Response({"error": "band_index must be an integer."}, status=400)
+
+    bands = _band_files(folder_name)
+    if bands is None or band_index not in bands:
+        return Response({"error": "The requested band does not exist."}, status=404)
+
+    band_path = bands[band_index]
+    return Response(
+        {
+            "image_folder": folder_name,
+            "band_index": band_index,
+            "filename": band_path.name,
+            "band_url": request.build_absolute_uri(
+                f"{settings.MEDIA_URL.rstrip('/')}/extracted_bands/"
+                f"{quote(folder_name)}/{quote(band_path.name)}"
+            ),
+        },
+        status=200,
+    )
+
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser, JSONParser])
 def make_clusters(request):
@@ -150,27 +267,31 @@ def make_clusters(request):
     clustering_dims = _as_int(data.get("clustering_dimentions"), 3)
     file_name = _as_string(data.get("clustering_file_name"), None)
     labeling_method = _as_string(data.get("label_method"), "kmeans")
-    selected_bands = data.get("selected_bands") or {}
-    if not isinstance(selected_bands, dict):
-        return Response(
-            {"error": "selected_bands must be an object keyed by image folder."},
-            status=400,
-        )
     try:
-        selected_bands = {
-            str(folder_name): [int(band_index) for band_index in band_indices]
-            for folder_name, band_indices in selected_bands.items()
-        }
-    except (TypeError, ValueError):
-        return Response(
-            {
-                "error": (
-                    "selected_bands must map each extracted folder name "
-                    "to a list of integer band indices."
+        selected_bands = _normalise_selected_bands(data.get("selected_bands"))
+        if selected_bands:
+            if not name_of_img_dir:
+                raise ValueError(
+                    "name_of_images is required when selected_bands is provided."
                 )
-            },
-            status=400,
-        )
+            requested_folders = set(name_of_img_dir)
+            unknown_folders = set(selected_bands) - requested_folders
+            if unknown_folders:
+                raise ValueError(
+                    "selected_bands contains folders not included in name_of_images."
+                )
+            for folder_name, indices in selected_bands.items():
+                bands = _band_files(folder_name)
+                if bands is None:
+                    raise ValueError(f"Extracted folder does not exist: {folder_name}.")
+                unavailable = set(indices) - set(bands)
+                if unavailable:
+                    raise ValueError(
+                        f"Band indices are not available for {folder_name}: "
+                        f"{sorted(unavailable)}."
+                    )
+    except ValueError as error:
+        return Response({"error": str(error)}, status=400)
     print("[INFO] labeling mehtod", labeling_method)
     try:
         clustered_band_count, clustered_image_count = perform_clustering(
