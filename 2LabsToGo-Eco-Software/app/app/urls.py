@@ -16,11 +16,12 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from django.conf import settings
-from django.conf.urls.static import static
 from django.conf.urls import include
 from django.views.generic import TemplateView
 from django.urls import re_path
 from django.http import HttpResponse
+from django.views.static import serve
+from django.views.decorators.clickjacking import xframe_options_exempt
 from .next_proxy import proxy_to_nextjs
 
 urlpatterns = [
@@ -29,6 +30,7 @@ urlpatterns = [
     path('', include('finecontrol.urls')),
     path('', include('connection.urls')),
     path('', include('sampleapp.urls')),
+    path('', include('rtlc.urls')),
     path('', include('development.urls')),
     path('', include('detection.urls')),
     path("healthz/", lambda r: HttpResponse("ok saasfjhsvhd", content_type="text/plain")),
@@ -39,8 +41,19 @@ urlpatterns = [
 
 ]
 
-
+if settings.DEBUG:
+    # Serve /media/ with X-Frame-Options exempted so it can be embedded
+    # in the Shiny app's iframe (different port = different origin).
+    urlpatterns += [
+        re_path(
+            r'^media/(?P<path>.*)$',
+            xframe_options_exempt(serve),
+            {'document_root': settings.MEDIA_ROOT},
+        ),
+    ]
+"""
 if settings.DEBUG:
     urlpatterns += static(
             settings.MEDIA_URL,
             document_root=settings.MEDIA_ROOT)
+"""
