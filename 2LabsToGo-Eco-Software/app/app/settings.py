@@ -26,6 +26,9 @@ SECRET_KEY = '&b5x3h*k6m5w#d&)&o@ecznzj0j()!mrn_7-3!3vjv%h&ch(86'
 DEBUG = True
 
 ALLOWED_HOSTS = ['127.0.0.1','192.168.2.109','134.176.158.47','testserver',"localhost"]
+# Densitogram requests carry base64 band images; matches client_max_body_size in nginx.conf.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024
+
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost',
     'http://127.0.0.1',

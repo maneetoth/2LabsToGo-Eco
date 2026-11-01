@@ -288,6 +288,9 @@ const Dashboard: React.FC = () => {
                     });
 
                 try {
+                    // Clear the previous image first: a large upload may not fit, and
+                    // Apply must not fall back to an older plate.
+                    localStorage.removeItem('chromatogram_image_0');
                     const b64 = await toBase64(imageFile);
                     localStorage.setItem('chromatogram_image_count', '1');
                     localStorage.setItem('chromatogram_image_0', b64);

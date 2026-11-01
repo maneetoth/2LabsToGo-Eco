@@ -784,7 +784,7 @@ const buildPreprocessOption = () => {
   // If DTW is used you previously had: {"dtw": 14}
   const Warping: Record<string, any> = {};
   if (advancedOptions.warping.method === 'DTW') {
-    Warping.dtw = coerce(advancedOptions.warping.dtw);
+    Warping.dtw = coerce(advancedOptions.warping.dtw || advancedOptions.warping.referenceTrack);
   } else if (advancedOptions.warping.method === 'PTW') {
     Warping.ptw = coerce(advancedOptions.warping.ptw);
     Warping.degree = coerce(advancedOptions.warping.degree);

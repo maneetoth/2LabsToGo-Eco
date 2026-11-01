@@ -75,7 +75,7 @@ class Extract_band_positions:
         first_band_center_px = int(first_band_mm / self.ratio_w)
         band_centers_px = [first_band_center_px + i * band_spacing_px for i in range(int(num_bands))]
 
-        if estimated_band_width_mm is None:
+        if not estimated_band_width_mm:  # 0 means auto
             estimated_band_width_mm = band_spacing_mm * 0.6
             print(f"Estimating band width: {estimated_band_width_mm:.2f} mm")
 

@@ -4,6 +4,8 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.forms.models import model_to_dict
 from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
 
@@ -15,6 +17,7 @@ import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw, ImageFont
 
 # Standard library imports
+import hashlib
 import json
 import os
 from types import SimpleNamespace
@@ -29,7 +32,7 @@ from .models import *
 from .utils.band_positions import Extract_band_positions
 from .utils.extract_densitogram import plot_before_preprocessing, densitogram_after_preprocessing
 from .utils.calibration_curve import *
-from .utils.peak_integration import get_peaks_and_area
+from .utils.peak_integration import get_peaks_and_area, positive_area
 from io import BytesIO
 import base64
 
@@ -362,6 +365,31 @@ def read_and_process_image(request):
     return Response({'message': 'Image processed successfully'})
 
 from .utils.read_image import read_image
+def save_uploaded_image(image_file):
+    """
+    Saves an uploaded image under media/ and returns its URL. Files are named
+    from their contents, so repeated uploads of one image do not create copies.
+    Only the current image is kept; images from earlier uploads are deleted.
+    """
+    image_file.seek(0)
+    content = image_file.read()
+    extension = os.path.splitext(image_file.name)[1].lower()
+    if extension not in ('.tif', '.tiff', '.png', '.jpg', '.jpeg', '.bmp'):
+        extension = ''
+    folder = "quantlc_uploads"
+    digest = hashlib.sha256(content).hexdigest()
+    saved_files = default_storage.listdir(folder)[1] if default_storage.exists(folder) else []
+    # Apply re-uploads under another filename, so match on the contents only.
+    for saved_file in saved_files:
+        if saved_file.startswith(digest):
+            return default_storage.url(f"{folder}/{saved_file}")
+    name = f"{folder}/{digest}{extension}"
+    default_storage.save(name, ContentFile(content))
+    for saved_file in saved_files:
+        default_storage.delete(f"{folder}/{saved_file}")
+    return default_storage.url(name)
+
+
 @api_view(['POST'])
 def Raw_densitogram(request):
     """
@@ -426,6 +454,7 @@ def Raw_densitogram(request):
             return_json=True
         )
     except Exception as e:
+        print(f"Raw_densitogram failed: {type(e).__name__}: {e} | image={image.shape if image is not None else None} params={params.dict()}", flush=True)
         return JsonResponse({type(e).__name__: "unable to process Image please provide correct values"}, status=400)
 
     # Convert NumPy array to PIL Image if needed
@@ -443,8 +472,8 @@ def Raw_densitogram(request):
 
     return JsonResponse({
         "marked_image": img_base64,
-        "densitogram_data": raw_data
-        
+        "densitogram_data": raw_data,
+        "image_url": save_uploaded_image(image_file)
     })
 
 @api_view(['POST'])
@@ -642,7 +671,7 @@ def peak_integration(request):
 
  
         try:
-            area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
+            area_val = positive_area(x[new_start:new_end+1], t[new_start:new_end+1])
             if manual_peak_height is None:
                 manual_peak_height = float(x[new_start:new_end].max())
         except Exception as e:

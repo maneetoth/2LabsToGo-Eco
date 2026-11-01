@@ -1,12 +1,10 @@
 # filepath: /Users/maneet/Documents/gissen/work/go2labs/2LabsToGo-Eco/2LabsToGo-Eco-Software/app/Dockerfile
 # Use the existing base image
-FROM ocmanager/ocmanager4:arm64
-
-# Install system dependencies for OpenCV
-RUN apt-get update && apt-get install -y \
+FROM python:3.11-slim
+# OpenCV needs these shared libraries at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory

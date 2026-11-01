@@ -18,6 +18,7 @@ from scipy.signal import (
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 from scipy.fft import rfft, irfft
+from scipy.optimize import minimize
 
 # NumPy helpers
 from numpy.lib.stride_tricks import sliding_window_view
@@ -25,76 +26,101 @@ from numpy.polynomial import Polynomial
 
 # Parallel / DTW / baselines
 from joblib import Parallel, delayed
-from dtw import dtw
+from dtw import dtw, warp
 from pybaselines import morphological, whittaker, polynomial
 
 def warping_dtw(query, template):
     """
-    Perform Dynamic Time Warping (DTW) alignment between each band in query and the template.
-    Returns a list of alignment results for all bands.
+    Align each band in query to the template with Dynamic Time Warping.
+    Returns a list of aligned bands, each the same length as the template.
     """
-    template = list(template)
+    template = np.asarray(template, float).ravel()
     def align_band(band):
-        band = list(band)
-        alignment,_ = dtw.warp(band, template)
-        return alignment
+        band = np.asarray(band, float).ravel()
+        alignment = dtw(band, template, keep_internals=True)
+        index = warp(alignment, index_reference=False)
+        return np.interp(np.arange(template.size), np.arange(index.size), band[index])
     results = Parallel(n_jobs=-1)(delayed(align_band)(band) for band in query)
     return results
 
 def warping_ptw(query_batch, template, degree=1, segment_length=None):
     """
-    Perform polynomial time warping (PTW) alignment for each band in query_batch to the template.
-    Returns a list of aligned results for all bands.
+    Align each band in query_batch to the template with Parametric Time Warping.
+    Returns a list of aligned bands.
     """
-    if isinstance(degree, str()):
-        degree= int(degree)
-    template = list(template)
+    degree = int(degree)
+    segment_length = int(segment_length) if segment_length else None
+    template = np.asarray(template, float).ravel()
     def align_band(band):
-        band = list(band)
         _, aligned_band = _single_ptw(band, template, degree, segment_length)
-        print('done')
         return aligned_band
 
     results = Parallel(n_jobs=-1)(delayed(align_band)(band) for band in query_batch)
     return results
 
+def _warped_positions(coeffs, positions, last_index):
+    """Move positions by a polynomial shift, keeping them ordered and in range."""
+    span = max(positions[-1] - positions[0], 1)
+    u = (positions - positions[0]) / span
+    moved = positions + np.polyval(coeffs, u)
+    return np.clip(np.maximum.accumulate(moved), 0, last_index)
+
+def _fit_ptw_segment(query, template, positions, degree):
+    """
+    Find the polynomial time shift that best maps query onto template over
+    positions. Starts from the best constant shift so that the optimizer does
+    not settle on a neighbouring peak.
+    """
+    full_axis = np.arange(query.size)
+    last_index = query.size - 1
+    target = template[positions.astype(int)]
+
+    def warped(coeffs):
+        return np.interp(_warped_positions(coeffs, positions, last_index), full_axis, query)
+
+    def cost(coeffs):
+        return float(np.sum((warped(coeffs) - target) ** 2))
+
+    start = np.zeros(degree + 1)
+    max_shift = max(1, query.size // 5)
+    start[-1] = min(
+        range(-max_shift, max_shift + 1),
+        key=lambda shift: cost(np.r_[np.zeros(degree), shift]),
+    )
+    result = minimize(cost, start, method="Powell")
+    return warped(result.x)
+
 def _single_ptw(query, template, degree=1, segment_length=None):
     """
-    Single-band PTW alignment (as before).
+    Single-band PTW: warp the time axis of query with a polynomial so that it
+    matches template. With segment_length set, each segment gets its own
+    polynomial. Intensities are only resampled, never refitted.
+    Returns (root mean square distance to the template, aligned band as a list).
     """
-    if isinstance(degree, str()):
-        degree= int(degree)
-    template = list(template)
-    if segment_length is None:
-        segment_length = len(template)
-    aligned_segments = []
-    segment_distances = []
-    for i in range(0, len(query), segment_length):
-        end_idx = min(i + segment_length, len(query))
-        query_segment = np.array(query[i:end_idx]).ravel()
-        seg_degree = min(degree, len(query_segment) - 1)
-        if seg_degree >= 1:
-            x_query = np.linspace(0, 1, len(query_segment))
-            p_query = Polynomial.fit(x_query, query_segment, seg_degree)
-            x_template = np.linspace(0, 1, len(query_segment))  
-            aligned_segment = p_query(x_template)
-            distance = np.sqrt(np.sum((aligned_segment - template) ** 2))
-            aligned_segments.append(aligned_segment)
-            segment_distances.append(distance)
-        elif len(query_segment) == 1:
-            aligned_segments.append(query_segment)
-            distance = np.sqrt(np.sum((query_segment - template[:len(query_segment)]) ** 2))
-            segment_distances.append(distance)
-    if aligned_segments:
-        aligned_query = np.concatenate(aligned_segments)
-        total_distance = np.mean(segment_distances)
-        aligned_query_list = [float(x) for x in aligned_query]
-    else:
-        aligned_query_list = []
-        total_distance = float('inf')
-    if len(aligned_query_list) < len(query):
-        aligned_query_list.extend(query[len(aligned_query_list):])
-    return total_distance, aligned_query_list
+    query = np.asarray(query, float).ravel()
+    template = np.asarray(template, float).ravel()
+    if query.size != template.size:
+        raise ValueError("PTW needs query and template of the same length.")
+    degree = int(degree)
+    if degree < 1:
+        raise ValueError("PTW degree must be at least 1.")
+
+    n = query.size
+    segment_length = min(int(segment_length), n) if segment_length else n
+    if segment_length < degree + 2:
+        raise ValueError(f"PTW seg_len must be at least {degree + 2} for degree {degree}.")
+
+    edges = list(range(0, n, segment_length)) + [n]
+    if len(edges) > 2 and edges[-1] - edges[-2] < degree + 2:
+        del edges[-2]  # too short to fit alone, so merge into the previous segment
+
+    aligned = np.empty(n, dtype=float)
+    for start, end in zip(edges[:-1], edges[1:]):
+        positions = np.arange(start, end, dtype=float)
+        aligned[start:end] = _fit_ptw_segment(query, template, positions, degree)
+
+    distance = float(np.sqrt(np.mean((aligned - template) ** 2)))
+    return distance, aligned.tolist()
 
 
 # baseline line correction methods
@@ -129,14 +155,19 @@ def _rolling_stat(y, full_win, func=np.median, pad_mode="reflect"):
     sw = sliding_window_view(yp, w)
     return func(sw, axis=-1)
 
-def _lowpass_fft_baseline(y, steep=2.0, half=5.0):
-    y = np.asarray(y, float)
-    n = y.size
-    Y = rfft(y)
-    freqs = np.linspace(0, 1.0, Y.size)
-    f_half = max(half, 1e-9) / 100.0
-    mask = 1.0 / (1.0 + np.exp(float(steep) * (freqs - f_half)))
-    return irfft(Y * mask, n=n)
+def _lowpass_fft_baseline(y, steep=2.0, half=5.0, iterations=20):
+    """
+    Low-pass baseline. half is the cutoff in percent of the frequency range.
+    Each pass lowers the signal to the baseline, so peaks stop lifting it.
+    """
+    fit = np.asarray(y, float)
+    n = fit.size
+    freqs = np.linspace(0, 100.0, n // 2 + 1)
+    mask = 1.0 / (1.0 + np.exp(float(steep) * (freqs - max(half, 1e-9))))
+    for _ in range(iterations):
+        baseline = irfft(rfft(fit) * mask, n=n)
+        fit = np.minimum(fit, baseline)
+    return baseline
 
 def _medianwindow_baseline(signal, hwm, hws=None, end=False):
     """
@@ -402,7 +433,26 @@ def baseline_peak_detection(
         "y2": y2     
     }
 
+def _negative_peaks_dominate(data):
+    """True if tracks reach further below their median than above it."""
+    median = np.median(data, axis=1)
+    depth = np.mean(median - np.min(data, axis=1))
+    height = np.mean(np.max(data, axis=1) - median)
+    return depth > height
+
+
 # main function (updated IRLS + shape handling)
+def _fill_opposite_peaks(signal):
+    """
+    Raise zones pointing against the peak direction to the local background,
+    so a baseline fitted to the result is not dragged down into them.
+    """
+    window = max(21, signal.size // 3)
+    background = _rolling_stat(signal, window)
+    noise = 1.4826 * np.median(np.abs(signal - background))
+    return np.maximum(signal, background - 3 * noise)
+
+
 def baseline_correction(data, method, **kwargs):
     """
     Perform baseline correction on 2D data (samples x points) or (samples x points x 1).
@@ -419,8 +469,12 @@ def baseline_correction(data, method, **kwargs):
         raise ValueError("baseline_correction expects data shaped (n, t) or (n, t, 1).")
     method_type = str(method['type']).lower()
     corrected_rows = np.empty_like(X, dtype=float)
+    # Baseline methods expect upward peaks and would follow downward ones, so
+    # fit a channel dominated by negative peaks on its flipped signal.
+    direction = -1.0 if _negative_peaks_dominate(X) else 1.0
     for j in range(X.shape[0]):
-        signal = X[j, :].astype(float).ravel()
+        original = direction * X[j, :].astype(float).ravel()
+        signal = _fill_opposite_peaks(original)
         if method_type == "asls":
 
             baseline, _ = whittaker.asls(
@@ -454,7 +508,7 @@ def baseline_correction(data, method, **kwargs):
                     baseline = new_base
                     break
                 baseline = new_base
-        elif method_type == "modpolyfit":
+        elif method_type in ("modpolyfit", "modpoly"):
             baseline, _ = polynomial.imodpoly(
                 signal,
                 poly_order=int(method.get('degree', 4)),
@@ -531,7 +585,7 @@ def baseline_correction(data, method, **kwargs):
             sn        = res["sn"]
         else:
             raise ValueError(f"Unsupported method_type: {method_type}")
-        corrected_rows[j, :] = signal - baseline
+        corrected_rows[j, :] = direction * (original - baseline)
     return corrected_rows
 
 # smoothing methods
@@ -598,6 +652,16 @@ def resample_to_100(arr):
     return arr_resampled.tolist()
 
 
+def _intensity_to_signal(intensity):
+    """
+    Convert brightness along a track to a densitogram signal running from
+    hRF 0 upwards. Colored zones are darker than the plate, so 1 - intensity
+    makes them positive peaks and colorless zones negative peaks.
+    """
+    resampled = np.asarray(resample_to_100(intensity), dtype=float)[::-1]
+    return (1.0 - resampled).tolist()
+
+
 def plot_before_preprocessing(
     band_info_dict, return_json=False
 ):
@@ -657,10 +721,10 @@ def plot_before_preprocessing(
             print(f"Error: band_array has shape {band_array.shape}, expected 2 or 3 dimensions.")
             return {}
 
-        r_densitogram = resample_to_100(r_densitogram)[::-1]   
-        g_densitogram = resample_to_100(g_densitogram)[::-1] 
-        b_densitogram = resample_to_100(b_densitogram)[::-1] 
-        grayscale_densitogram = resample_to_100(grayscale_densitogram)[::-1] 
+        r_densitogram = _intensity_to_signal(r_densitogram)
+        g_densitogram = _intensity_to_signal(g_densitogram)
+        b_densitogram = _intensity_to_signal(b_densitogram)
+        grayscale_densitogram = _intensity_to_signal(grayscale_densitogram)
 
 
 
@@ -727,6 +791,29 @@ def densitogram_after_preprocessing(densitogram_data: dict, preprocess_order: li
     return json.dumps(processed_data)
 
 
+def _warping_template(data, track, reference=None):
+    """Return the template for a 1-based track number, as shown in the UI."""
+    source = data if reference is None else reference
+    track = int(track)
+    if track < 1 or track > source.shape[0]:
+        raise ValueError(f"Warping reference track must be between 1 and {source.shape[0]}, got {track}.")
+    return np.asarray(source[track - 1], float).ravel()
+
+
+def _apply_warping(data, options, reference=None):
+    options = options or {}
+    if options.get('ptw') is not None:
+        template = _warping_template(data, options['ptw'], reference)
+        aligned = warping_ptw(data, template, options.get('degree') or 1, options.get('seg_len'))
+    elif options.get('dtw') is not None:
+        template = _warping_template(data, options['dtw'], reference)
+        aligned = warping_dtw(data, template)
+    else:
+        raise ValueError("You must specify which warping option ('dtw' or 'ptw') to use in preprocess_option['Warping'].")
+    aligned = np.stack(aligned, axis=0)
+    return aligned[:, :, np.newaxis] if aligned.ndim == 2 else aligned
+
+
 def apply_preprocessing(
     band_array: np.ndarray,
     preprocess_order: list,
@@ -743,8 +830,6 @@ def apply_preprocessing(
     if reference is not None and not isinstance(reference, np.ndarray):
         raise ValueError("reference must be a numpy ndarray or None.")
     data = deepcopy(band_array)
-    if reference is None:
-        reference = deepcopy(data)
     if 'NegativePeakInversion' in preprocess_order: 
         data = simple_inversion(data)
     if 'Negatif' in preprocess_order:
@@ -757,7 +842,7 @@ def apply_preprocessing(
     if 'gammaCorrection' in preprocess_order:
         if 'gammaCorrection' in preprocess_option:
             gamma = preprocess_option['gammaCorrection']
-            data = np.power(data, gamma)
+            data = np.power(np.maximum(data, 0), gamma)
         else:
             print(f"Warning: 'gammaCorrection' option not found in preprocess_option.")
     if 'baseline' in preprocess_order:
@@ -774,35 +859,6 @@ def apply_preprocessing(
             if data.ndim == 2:
                 data = data[:, :, np.newaxis]
     if 'Warping' in preprocess_order:
-        if 'Warping' in preprocess_option:
-           
-            if 'ptw' in preprocess_option['Warping'] and preprocess_option['Warping']['ptw']:
-               
-                data = warping_ptw(
-                    band_array,
-                    reference[preprocess_option['Warping']['ptw']],
-                    preprocess_option['Warping']['degree'],
-                    preprocess_option['Warping']['seg_len']
-                )
-                print('warping(ptw) done')
-                data = np.stack(data, axis=0)
-                if data.ndim == 2:
-                    data = data[:, :, np.newaxis]
+        data = _apply_warping(data, preprocess_option.get('Warping'), reference)
 
-                else:
-                    print(f"Warning: 'Warping' options not found in preprocess_option.")
-            elif 'dtw' in preprocess_option['Warping'] and preprocess_option['Warping']['dtw']:
-                print('*' * 100)
-                
-                data = warping_dtw(band_array, reference[preprocess_option['Warping']['dtw']])
-                data = np.stack(data, axis=0)
-                
-                if data.ndim == 2:
-                    data = data[:, :, np.newaxis]
-            else:
-                print(f"Warning: 'Warping' options not found in preprocess_option.")
-        else:
-            raise ValueError("You must specify which warping option ('dtw' or 'ptw') to use in preprocess_option['Warping'].")
-   
-    data = np.maximum(data, 0)
     return data

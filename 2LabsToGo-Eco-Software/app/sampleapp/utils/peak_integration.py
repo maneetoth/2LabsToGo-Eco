@@ -1,6 +1,12 @@
 import numpy as np
 from scipy.signal import find_peaks
 
+
+def positive_area(y, t):
+    """Trapezoidal area above zero; the signal can go negative."""
+    return float(np.trapz(np.maximum(y, 0), t))
+
+
 def get_peaks_and_area(x, height=None, threshold=None, distance=30,
                        prominence=None, width=None, wlen=None, rel_height=0.5,
                        plateau_size=None, Min_peak_area=None, find_area=True):
@@ -44,12 +50,14 @@ def get_peaks_and_area(x, height=None, threshold=None, distance=30,
     dx = np.diff(x)  
     result_dict = {}
     for p in peaks:
+        if x[p] <= 0:  # the top of a dip between negative peaks, not a peak
+            continue
         start, end = p, p
         while start > 0 and dx[start-1] > 0:
             start -= 1
         while end < len(dx) and dx[end] < 0:
             end += 1
-        area_val = float(np.trapz(x[start:end+1], t[start:end+1]))
+        area_val = positive_area(x[start:end+1], t[start:end+1])
         if Min_peak_area is not None and area_val < Min_peak_area:
             continue
         entry = {
@@ -105,7 +113,7 @@ def update_peak_areas(x, existing_peaks_dict, find_area=True, Min_peak_area=None
             else:
                 start = end = int(peak_info["peak_x"])
 
-            area_val = float(np.trapz(x[start:end+1], t[start:end+1]))
+            area_val = positive_area(x[start:end+1], t[start:end+1])
 
             if Min_peak_area is not None and area_val < Min_peak_area:
                 continue
