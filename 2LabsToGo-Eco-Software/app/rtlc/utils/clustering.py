@@ -1,4 +1,5 @@
 # This file will be used for clustering the bands
+import json
 import os
 import torch
 import pandas as pd
@@ -50,28 +51,49 @@ def get_clusters(
         for name in image_names
     ]
     post_script = """
+const CLUSTER_NAME = __CLUSTER_NAME__;
+const COMPARE_URL = '/api/rtlc/compare_datapoints/';
 const graph = document.getElementById('{plot_id}');
-graph.on('plotly_click', function(eventData) {
-    const point = eventData.points[0];
-    const imageUrl = point.customdata[0];
-    const imageName = point.customdata[1];
+const selected = new Map();
+const embedded = new URLSearchParams(window.location.search).has('shiny');
+let mode = 'view';
+
+function postSelection() {
+    if (!embedded) return;
+    window.parent.postMessage(
+        {type: 'rtlc-selection', names: Array.from(selected.values())}, '*'
+    );
+}
+
+function openModal(content) {
     const modal = document.createElement('div');
     modal.style.cssText = [
         'position:fixed', 'inset:0', 'z-index:9999', 'display:flex',
         'align-items:center', 'justify-content:center',
         'background:rgba(0,0,0,.75)', 'padding:24px'
     ].join(';');
-    const content = document.createElement('div');
-    content.style.cssText = [
-        'position:relative', 'max-width:90vw', 'max-height:90vh',
-        'background:#fff', 'padding:16px', 'border-radius:6px',
-        'text-align:center'
-    ].join(';');
+    content.style.position = 'relative';
+    content.style.maxWidth = '90vw';
+    content.style.maxHeight = '90vh';
+    content.style.background = '#fff';
+    content.style.padding = '16px';
+    content.style.borderRadius = '6px';
+    content.style.textAlign = 'center';
     const close = document.createElement('button');
     close.textContent = 'Close';
-    close.setAttribute('aria-label', 'Close image preview');
+    close.setAttribute('aria-label', 'Close preview');
     close.style.cssText = 'position:absolute;right:8px;top:8px;z-index:1';
     close.onclick = () => modal.remove();
+    content.appendChild(close);
+    modal.appendChild(content);
+    modal.onclick = (event) => {
+        if (event.target === modal) modal.remove();
+    };
+    document.body.appendChild(modal);
+}
+
+function showImage(imageUrl, imageName) {
+    const content = document.createElement('div');
     const link = document.createElement('a');
     link.href = imageUrl;
     link.target = '_blank';
@@ -85,14 +107,173 @@ graph.on('plotly_click', function(eventData) {
     caption.textContent = imageName + ' (click image to open full size)';
     caption.style.cssText = 'margin-top:8px;word-break:break-word';
     link.appendChild(image);
-    content.append(close, link, caption);
-    modal.appendChild(content);
-    modal.onclick = (event) => {
-        if (event.target === modal) modal.remove();
-    };
-    document.body.appendChild(modal);
+    content.append(link, caption);
+    openModal(content);
+}
+
+function showComparison(data) {
+    const content = document.createElement('div');
+    const title = document.createElement('h3');
+    title.textContent = data.mode === 'nearest'
+        ? 'Nearest ' + (data.datapoints.length - 1) + ' datapoints'
+        : 'Comparing ' + data.datapoints.length + ' datapoints';
+    title.style.cssText = 'margin:0 64px 12px;font-family:sans-serif';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:12px;overflow-x:auto;padding-bottom:8px';
+    data.datapoints.forEach((datapoint, position) => {
+        const card = document.createElement('div');
+        card.style.cssText = 'flex:0 0 auto;width:160px;font:12px sans-serif';
+        const image = document.createElement('img');
+        image.src = datapoint.image_url;
+        image.alt = datapoint.image_name;
+        image.style.cssText = 'display:block;width:100%;height:60vh;object-fit:contain;background:#eee';
+        const name = document.createElement('div');
+        name.textContent = datapoint.image_name;
+        name.style.cssText = 'margin-top:6px;word-break:break-word';
+        const details = document.createElement('div');
+        details.style.color = '#555';
+        details.textContent = 'Cluster ' + datapoint.cluster;
+        if (data.mode === 'nearest') {
+            details.textContent += position === 0
+                ? ' · selected'
+                : ' · distance ' + datapoint.distance.toFixed(3);
+        }
+        card.append(image, name, details);
+        row.appendChild(card);
+    });
+    content.append(title, row);
+    openModal(content);
+}
+
+const toolbar = document.createElement('div');
+toolbar.style.cssText = [
+    'position:fixed', 'left:12px', 'bottom:12px', 'z-index:1000',
+    'display:flex', 'flex-wrap:wrap', 'align-items:center', 'gap:8px',
+    'max-width:calc(100vw - 24px)', 'padding:8px 10px',
+    'background:rgba(255,255,255,.95)', 'border:1px solid #ccc',
+    'border-radius:6px', 'font:13px sans-serif'
+].join(';');
+const modeSelect = document.createElement('select');
+modeSelect.setAttribute('aria-label', 'Click action');
+[['view', 'View image'], ['manual', 'Manual selection'], ['nearest', 'Nearest selection']]
+    .forEach(([value, label]) => modeSelect.add(new Option(label, value)));
+const neighborsLabel = document.createElement('label');
+neighborsLabel.textContent = 'Neighbours ';
+const neighborsInput = document.createElement('input');
+neighborsInput.type = 'number';
+neighborsInput.min = '1';
+neighborsInput.value = '5';
+neighborsInput.style.width = '56px';
+neighborsLabel.appendChild(neighborsInput);
+const compareButton = document.createElement('button');
+compareButton.textContent = 'Compare';
+const clearButton = document.createElement('button');
+clearButton.textContent = 'Clear';
+const status = document.createElement('span');
+toolbar.append(modeSelect, neighborsLabel, compareButton, clearButton, status);
+document.body.appendChild(toolbar);
+
+function refreshToolbar(message) {
+    const needed = mode === 'manual' ? 2 : 1;
+    const active = mode !== 'view';
+    neighborsLabel.style.display = mode === 'nearest' ? '' : 'none';
+    compareButton.style.display = active ? '' : 'none';
+    clearButton.style.display = active ? '' : 'none';
+    compareButton.disabled = selected.size < needed;
+    if (message !== undefined) {
+        status.textContent = message;
+    } else if (!active) {
+        status.textContent = 'Click a point to open its band';
+    } else if (selected.size === 0) {
+        status.textContent = mode === 'manual'
+            ? 'Click points to select them'
+            : 'Click a point';
+    } else {
+        status.textContent = selected.size + ' selected';
+    }
+}
+
+function clearSelection() {
+    selected.clear();
+    refreshToolbar();
+    postSelection();
+}
+
+modeSelect.onchange = () => {
+    mode = modeSelect.value;
+    clearSelection();
+};
+clearButton.onclick = clearSelection;
+compareButton.onclick = () => compare(neighborsInput.value);
+
+function reportError(message) {
+    refreshToolbar(message);
+    if (embedded) window.parent.postMessage({type: 'rtlc-error', error: message}, '*');
+}
+
+async function compare(nNeighbors) {
+    const params = new URLSearchParams({cluster_file_name: CLUSTER_NAME, mode});
+    selected.forEach((_, index) => params.append('points', index));
+    if (mode === 'nearest') params.set('n_neighbors', nNeighbors);
+    compareButton.disabled = true;
+    refreshToolbar('Loading…');
+    try {
+        const response = await fetch(COMPARE_URL + '?' + params);
+        const data = await response.json();
+        if (!response.ok) {
+            reportError(data.error || 'Unable to compare datapoints.');
+            return;
+        }
+        refreshToolbar();
+        if (!embedded) {
+            showComparison(data);
+            return;
+        }
+        data.datapoints.forEach((datapoint) => {
+            datapoint.image_url = new URL(datapoint.image_url, window.location.href).href;
+        });
+        window.parent.postMessage({type: 'rtlc-comparison', data}, '*');
+    } catch (error) {
+        reportError('Unable to compare datapoints.');
+    }
+}
+
+graph.on('plotly_click', function(eventData) {
+    const point = eventData.points[0];
+    const index = point.customdata[3];
+    if (mode === 'view') {
+        showImage(point.customdata[0], point.customdata[1]);
+        return;
+    }
+    if (mode === 'nearest') selected.clear();
+    if (mode === 'manual' && selected.has(index)) {
+        selected.delete(index);
+    } else {
+        selected.set(index, point.customdata[1]);
+    }
+    refreshToolbar();
+    postSelection();
 });
-"""
+refreshToolbar();
+
+if (embedded) {
+    toolbar.style.display = 'none';
+    window.addEventListener('message', (event) => {
+        if (event.source !== window.parent) return;
+        if (!event.data) return;
+        if (event.data.type === 'rtlc-compare') compare(event.data.n_neighbors);
+        if (event.data.type === 'rtlc-mode') {
+            mode = event.data.mode;
+            modeSelect.value = mode;
+            clearSelection();
+        }
+    });
+    window.parent.postMessage({type: 'rtlc-ready'}, '*');
+}
+""".replace(
+        "__CLUSTER_NAME__",
+        json.dumps(cluster_name).replace("<", "\\u003c"),
+    )
     if dims == 3:
         df = pd.DataFrame({
             'x': latent_pca[:, 0],
@@ -102,11 +283,12 @@ graph.on('plotly_click', function(eventData) {
             "ImageName": image_names,
             "SourceImage": source_images,
             "ImageURL": image_urls,
+            "PointIndex": range(len(image_names)),
         })
         fig = px.scatter_3d(
             df, x='x', y='y', z='z',
             color='SourceImage',
-            custom_data=["ImageURL", "ImageName", "Cluster"],
+            custom_data=["ImageURL", "ImageName", "Cluster", "PointIndex"],
             title="Interactive 3D Latent Space Clusters (colored by image).",
             hover_name="ImageName",
             opacity=0.8
@@ -119,11 +301,12 @@ graph.on('plotly_click', function(eventData) {
             "ImageName": image_names,
             "SourceImage": source_images,
             "ImageURL": image_urls,
+            "PointIndex": range(len(image_names)),
         })
         fig = px.scatter(
             df, x='x', y='y',
             color='SourceImage',
-            custom_data=["ImageURL", "ImageName", "Cluster"],
+            custom_data=["ImageURL", "ImageName", "Cluster", "PointIndex"],
             title="Interactive 2D Latent Space Clusters (colored by image).",
             hover_name="ImageName",
             opacity=0.8
@@ -132,11 +315,41 @@ graph.on('plotly_click', function(eventData) {
     if output_dir == None:
         output_dir = "./media/clusters"
     os.makedirs(output_dir, exist_ok=True)
+    with open(f"{output_dir}/{cluster_name}.json", "w") as points_file:
+        json.dump(
+            {
+                "dimensions": dims,
+                "points": [
+                    {
+                        "image_name": image_name,
+                        "image_url": image_url,
+                        "cluster": str(label),
+                        "coordinates": coordinates,
+                    }
+                    for image_name, image_url, label, coordinates in zip(
+                        image_names, image_urls, labels, latent_pca.tolist()
+                    )
+                ],
+            },
+            points_file,
+        )
     fig.write_html(
         f"{output_dir}/{cluster_name}.html",
         post_script=post_script,
     )
 
+
+
+def nearest_points(coordinates, point_index, n_neighbors):
+    """Return (index, distance) of the closest plotted points, nearest first."""
+    coordinates = np.asarray(coordinates, dtype=float)
+    distances = np.linalg.norm(coordinates - coordinates[point_index], axis=1)
+    order = [
+        index
+        for index in np.argsort(distances, kind="stable").tolist()
+        if index != point_index
+    ]
+    return [(index, float(distances[index])) for index in order[:n_neighbors]]
 
 
 # In clustering.py

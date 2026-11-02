@@ -11,6 +11,102 @@ from PIL import Image as PILImage
 
 from shiny import App, reactive, render, ui
 
+# Runs compare in the browser: the plot caches clicks, this page opens the result window
+COMPARE_BRIDGE_JS = """
+(function () {
+    const EMPTY_STATUS = 'Click points on the plot to select them.';
+
+    function plotWindow() {
+        const frame = document.getElementById('cluster_frame');
+        return frame ? frame.contentWindow : null;
+    }
+    function setStatus(text) {
+        document.getElementById('compare_status').textContent = text;
+    }
+    function sendToPlot(message) {
+        const target = plotWindow();
+        if (target) {
+            target.postMessage(message, '*');
+        } else {
+            setStatus("Run 'Make Clusters' first.");
+        }
+    }
+    function sendMode() {
+        const checked = document.querySelector('input[name="compare_mode"]:checked');
+        if (checked) sendToPlot({type: 'rtlc-mode', mode: checked.value});
+    }
+    function openComparison(data) {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:9999; display:flex; ' +
+            'align-items:center; justify-content:center; background:rgba(0,0,0,.75);';
+        const panel = document.createElement('div');
+        panel.style.cssText = 'position:relative; max-width:95vw; max-height:94vh; ' +
+            'padding:16px; background:#fff; border-radius:6px;';
+        const title = document.createElement('h4');
+        title.textContent = data.mode === 'nearest'
+            ? 'Nearest ' + (data.datapoints.length - 1) + ' datapoints'
+            : 'Comparing ' + data.datapoints.length + ' datapoints';
+        const close = document.createElement('button');
+        close.textContent = 'Close';
+        close.className = 'btn btn-default';
+        close.style.cssText = 'position:absolute; right:12px; top:12px;';
+        close.onclick = () => overlay.remove();
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; gap:12px; overflow-x:auto; padding-bottom:8px;';
+        data.datapoints.forEach((datapoint, position) => {
+            const card = document.createElement('div');
+            card.style.cssText = 'flex:0 0 auto; width:180px; font-size:13px;';
+            const image = document.createElement('img');
+            image.src = datapoint.image_url;
+            image.alt = datapoint.image_name;
+            image.style.cssText = 'display:block; width:100%; height:72vh; ' +
+                'object-fit:contain; background:#eee;';
+            const name = document.createElement('div');
+            name.textContent = datapoint.image_name;
+            name.style.wordBreak = 'break-word';
+            const details = document.createElement('small');
+            details.textContent = 'Cluster ' + datapoint.cluster;
+            if (data.mode === 'nearest') {
+                details.textContent += position === 0
+                    ? ' · selected'
+                    : ' · distance ' + datapoint.distance.toFixed(3);
+            }
+            card.append(image, name, details);
+            row.appendChild(card);
+        });
+        panel.append(title, close, row);
+        overlay.appendChild(panel);
+        overlay.onclick = (event) => {
+            if (event.target === overlay) overlay.remove();
+        };
+        document.body.appendChild(overlay);
+    }
+
+    window.addEventListener('message', (event) => {
+        if (!event.data || event.source !== plotWindow()) return;
+        if (event.data.type === 'rtlc-ready') sendMode();
+        if (event.data.type === 'rtlc-selection') {
+            const names = event.data.names;
+            setStatus(names.length ? names.length + ' selected: ' + names.join(', ') : EMPTY_STATUS);
+        }
+        if (event.data.type === 'rtlc-comparison') openComparison(event.data.data);
+        if (event.data.type === 'rtlc-error') setStatus(event.data.error);
+    });
+    document.addEventListener('change', (event) => {
+        if (event.target.name === 'compare_mode') sendMode();
+    });
+    document.addEventListener('click', (event) => {
+        if (event.target.closest('#compare_clear_btn')) sendMode();
+        if (event.target.closest('#compare_btn')) {
+            sendToPlot({
+                type: 'rtlc-compare',
+                n_neighbors: document.getElementById('n_neighbors').value,
+            });
+        }
+    });
+})();
+"""
+
 # Define the user interface matching your layout with the new clustering panel added[cite: 5, 6]
 app_ui = ui.page_fluid(
     ui.h2("Track detection viewer (Django Backend Connected)"),
@@ -33,7 +129,7 @@ app_ui = ui.page_fluid(
             ui.input_numeric("band_width", "band_width (px)", value=10.0, min=1.0, step=1.0),
             ui.p("Tip: Upload first, then tweak values in manual mode."),
             ui.hr(),
-            ui.input_action_button("extract_btn", "Extract Bands", class_="btn-primary"),
+            ui.input_task_button("extract_btn", "Extract Bands"),
             ui.output_text_verbatim("extract_status"),
             ui.hr(),
             # --- New Clustering Controls ---
@@ -63,15 +159,37 @@ app_ui = ui.page_fluid(
                 choices={"kmeans": "KMeans (unsupervised)", "name": "By source folder name"},
                 selected="kmeans",
             ),
-            ui.input_action_button("cluster_btn", "Make Clusters", class_="btn-success"),
+            ui.input_task_button("cluster_btn", "Make Clusters", type="success"),
             ui.output_text_verbatim("cluster_status"),
         ),
         ui.output_plot("marked_plot"),
         ui.output_text_verbatim("summary"),
         ui.hr(),
         ui.h4("Cluster Dashboard"),
+        ui.input_radio_buttons(
+            "compare_mode",
+            "When I click a point",
+            choices={
+                "view": "View image",
+                "manual": "Manual selection",
+                "nearest": "Nearest selection",
+            },
+            selected="view",
+            inline=True,
+        ),
+        ui.panel_conditional(
+            "input.compare_mode == 'nearest'",
+            ui.input_numeric("n_neighbors", "Number of neighbours", value=5, min=1, step=1),
+        ),
+        ui.panel_conditional(
+            "input.compare_mode != 'view'",
+            ui.input_action_button("compare_btn", "Compare", class_="btn-primary"),
+            ui.input_action_button("compare_clear_btn", "Clear"),
+            ui.tags.pre("Click points on the plot to select them.", id="compare_status"),
+        ),
         ui.output_ui("cluster_dashboard"),
     ),
+    ui.tags.script(COMPARE_BRIDGE_JS),
 )
 
 
@@ -568,7 +686,8 @@ def server(input, output, session):
 
         full_url = f"{DJANGO_API_URL.replace('/api/rtlc', '')}{url}"
         return ui.tags.iframe(
-            src=full_url,
+            id="cluster_frame",
+            src=f"{full_url}?shiny=1",
             style="width:100%; height:600px; border:1px solid #ccc;",
         )
 

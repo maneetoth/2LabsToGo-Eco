@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from pathlib import Path as PyPath
@@ -12,7 +13,7 @@ from rest_framework.response import Response
 from .api_validation import get_marking_values, validate_uploaded_images
 from .services import analyze_single_image, extract_single_image, _as_int, _as_list, _as_string
 
-from .utils.clustering import perform_clustering
+from .utils.clustering import nearest_points, perform_clustering
 
 LOGGER = logging.getLogger(__name__)
 ALLOWED_BAND_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -67,6 +68,15 @@ def _band_url(request, folder_name, band_index):
         f"{quote(folder_name)}/{quote(str(band_index))}.png"
     )
     return request.build_absolute_uri(relative_path)
+
+
+def _load_cluster_points(cluster_name):
+    root = (PyPath(settings.MEDIA_ROOT) / "clusters").resolve()
+    path = (root / f"{cluster_name}.json").resolve()
+    if path.parent != root or not path.is_file():
+        return None
+    with path.open() as points_file:
+        return json.load(points_file)["points"]
 
 
 def _get_uploaded_files(request):
@@ -250,6 +260,64 @@ def datapoint(request):
                 f"{settings.MEDIA_URL.rstrip('/')}/extracted_bands/"
                 f"{quote(folder_name)}/{quote(band_path.name)}"
             ),
+        },
+        status=200,
+    )
+
+
+@api_view(["GET"])
+def compare_datapoints(request):
+    """Return the band of each manually selected point, or of one point and its nearest points."""
+    cluster_name = request.query_params.get("cluster_file_name", "").strip()
+    mode = request.query_params.get("mode", "")
+    if not cluster_name:
+        return Response({"error": "cluster_file_name is required."}, status=400)
+    if mode not in ("manual", "nearest"):
+        return Response({"error": "mode must be manual or nearest."}, status=400)
+
+    points = _load_cluster_points(cluster_name)
+    if points is None:
+        return Response({"error": "The requested cluster does not exist."}, status=404)
+
+    try:
+        indices = list(
+            dict.fromkeys(int(index) for index in request.query_params.getlist("points"))
+        )
+    except ValueError:
+        return Response({"error": "points must be integers."}, status=400)
+    if any(index < 0 or index >= len(points) for index in indices):
+        return Response({"error": "points contains an unknown datapoint."}, status=400)
+
+    if mode == "manual":
+        if len(indices) < 2:
+            return Response(
+                {"error": "Select at least two datapoints to compare."},
+                status=400,
+            )
+        matches = [(index, None) for index in indices]
+    else:
+        if len(indices) != 1:
+            return Response({"error": "Select exactly one datapoint."}, status=400)
+        try:
+            n_neighbors = int(request.query_params.get("n_neighbors", ""))
+        except ValueError:
+            return Response({"error": "n_neighbors must be an integer."}, status=400)
+        if n_neighbors < 1:
+            return Response({"error": "n_neighbors must be at least 1."}, status=400)
+        coordinates = [point["coordinates"] for point in points]
+        matches = [(indices[0], 0.0)] + nearest_points(
+            coordinates,
+            indices[0],
+            n_neighbors,
+        )
+
+    return Response(
+        {
+            "mode": mode,
+            "datapoints": [
+                {**points[index], "index": index, "distance": distance}
+                for index, distance in matches
+            ],
         },
         status=200,
     )
