@@ -1,8 +1,19 @@
+import time
 from pathlib import Path
 from uuid import uuid4
 
 from django.conf import settings
 from PIL import Image, ImageDraw
+
+
+MARKED_IMAGE_MAX_AGE_SECONDS = 48 * 60 * 60
+
+
+def delete_old_marked_images(output_directory):
+    oldest_allowed = time.time() - MARKED_IMAGE_MAX_AGE_SECONDS
+    for path in output_directory.glob("*_marked_*.png"):
+        if path.stat().st_mtime < oldest_allowed:
+            path.unlink(missing_ok=True)
 
 
 def create_marked_image(image_path, result):
@@ -32,6 +43,7 @@ def create_marked_image(image_path, result):
 
     output_directory = Path(settings.MEDIA_ROOT) / "marked_images"
     output_directory.mkdir(parents=True, exist_ok=True)
+    delete_old_marked_images(output_directory)
 
     original_stem = Path(result["filename"]).stem
     output_filename = f"{original_stem}_marked_{uuid4().hex[:8]}.png"

@@ -1,11 +1,34 @@
 import json
+import os
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
 from django.test import TestCase, override_settings
 
 from .utils.clustering import get_clusters, nearest_points
+from .utils.image_marking import MARKED_IMAGE_MAX_AGE_SECONDS, delete_old_marked_images
+
+
+class DeleteOldMarkedImagesTests(TestCase):
+    def test_deletes_only_marked_images_past_the_age_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            old_marked = directory / "a_marked_11111111.png"
+            new_marked = directory / "b_marked_22222222.png"
+            old_other = directory / "notes.png"
+            for path in (old_marked, new_marked, old_other):
+                path.touch()
+            expired = time.time() - MARKED_IMAGE_MAX_AGE_SECONDS - 60
+            os.utime(old_marked, (expired, expired))
+            os.utime(old_other, (expired, expired))
+
+            delete_old_marked_images(directory)
+
+            self.assertFalse(old_marked.exists())
+            self.assertTrue(new_marked.exists())
+            self.assertTrue(old_other.exists())
 
 
 class NearestPointsTests(TestCase):
