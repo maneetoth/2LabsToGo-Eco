@@ -29,7 +29,7 @@ from .models import *
 from .utils.band_positions import Extract_band_positions
 from .utils.extract_densitogram import plot_before_preprocessing, densitogram_after_preprocessing
 from .utils.calibration_curve import *
-from .utils.peak_integration import get_peaks_and_area
+from .utils.peak_integration import apply_peak_edits, get_peaks_and_area
 from io import BytesIO
 import base64
 
@@ -562,7 +562,12 @@ def peak_integration(request):
     find_area = params.get("find_area", True)
 
 
-    edit_peak_integration = params.get("edit_peak_integration", [])
+    edits = params.get("edit_peak_integration", [])
+    clear_automatic_tracks = params.get("clear_automatic_tracks", [])
+    if not isinstance(edits, list) or not isinstance(clear_automatic_tracks, list):
+        return JsonResponse({"error": "Peak edits and track exclusions must be lists."}, status=400)
+    if any(not isinstance(track, str) or track not in data for track in clear_automatic_tracks):
+        return JsonResponse({"error": "Choose valid tracks when clearing automatic peaks."}, status=400)
 
     band_dict = {}
 
@@ -571,6 +576,10 @@ def peak_integration(request):
             band_dict[band_key] = {}
             for channel_name, channel_data in band.items():
                 if channel_name not in ["red", "green", "blue", "grayscale"]:
+                    continue
+
+                if band_key in clear_automatic_tracks:
+                    band_dict[band_key][channel_name] = {}
                     continue
 
                 try:
@@ -582,7 +591,7 @@ def peak_integration(request):
                         prominence=peak_prominence,
                         width=peak_width,
                         wlen=peak_wlen,
-                        rel_height=peak_el_height,
+                        rel_height=0.5 if peak_el_height is None else peak_el_height,
                         plateau_size=peak_plateau_size,
                         Min_peak_area=peak_Min_peak_area,
                         find_area=find_area
@@ -593,89 +602,16 @@ def peak_integration(request):
 
                 # Convert keys to peak_x for consistency
                 band_dict[band_key][channel_name] = {
-                    v["peak_x"]: v for k, v in band_peaks.items()
+                    peak["peak_x"]: {**peak, "source": "automatic"} for peak in band_peaks.values()
                 }
     except Exception as e:
         return JsonResponse({"error": "Failed during peak detection processing", "details": str(e)}, status=500)
 
 
-    for edit in edit_peak_integration:
-        band_key = edit.get("band_key")
-        channel_name = edit.get("channel_name")
-        edit_type = edit.get("edit_type", "update").lower()  # "add", "update", "delete"
-        new_start = edit.get("new_start")
-        new_end = edit.get("new_end")
-        manual_peak_height = edit.get("peak_height", None)
-        manual_peak_x = edit.get("peak_x", None)
-
-        # Validate band and channel
-        if band_key is None or channel_name is None:
-            continue
-        if band_key not in data or channel_name not in data[band_key]:
-            continue
-
-        # Initialize channel dict if missing
-        if band_key not in band_dict:
-            band_dict[band_key] = {}
-        if channel_name not in band_dict[band_key]:
-            band_dict[band_key][channel_name] = {}
-
-        x = np.array(data[band_key][channel_name])
-        t = np.arange(len(x))
-
-        # For add/update, need bounds
-        if edit_type in ["add", "update"] and (new_start is None or new_end is None):
-            continue
-
-
-        if edit_type == "add":
-            manual_peak_x = int(new_start + np.argmax(x[new_start:new_end]))
-        elif manual_peak_x is None:
-            # For update, user must provide peak_x
-            continue
-
-        dict_key = manual_peak_x  # Use peak_x as dictionary key
-
-        if edit_type == "delete":
-            # deletion will be applied later in final filtering
-            continue
-
- 
-        try:
-            area_val = float(np.trapz(x[new_start:new_end+1], t[new_start:new_end+1]))
-            if manual_peak_height is None:
-                manual_peak_height = float(x[new_start:new_end].max())
-        except Exception as e:
-            # Skip this edit if bounds/indices are invalid or computation fails
-            continue
-
-        if edit_type == "update":
-            if dict_key in band_dict[band_key][channel_name]:
-                band_dict[band_key][channel_name][dict_key] = {
-                    "peak_height": float(manual_peak_height),
-                    "peak_x": int(manual_peak_x),
-                    "start_end": (int(new_start), int(new_end)),
-                    "area": area_val
-                }
-            else:
-                # Treat as add if peak does not exist
-                edit_type = "add"
-
-            band_dict[band_key][channel_name][dict_key] = {
-                "peak_height": float(manual_peak_height),
-                "peak_x": int(manual_peak_x),
-                "start_end": (int(new_start), int(new_end)),
-                "area": area_val
-            }
-
-    for edit in edit_peak_integration:
-        if edit.get("edit_type", "").lower() == "delete":
-            band_key = edit.get("band_key")
-            channel_name = edit.get("channel_name")
-            peak_x = edit.get("peak_x")
-            if band_key and channel_name and peak_x is not None:
-                if band_key in band_dict and channel_name in band_dict[band_key]:
-                    band_dict[band_key][channel_name].pop(peak_x, None)
+    try:
+        apply_peak_edits(data, band_dict, edits)
+    except (TypeError, ValueError) as error:
+        return JsonResponse({"error": str(error)}, status=400)
 
     return JsonResponse(band_dict)
 
@@ -713,8 +649,8 @@ def calibrate(request):
 
         data=calibrate_and_predict(known_conc, known_peaks,unknown_peaks,
         model_type=model_type)
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+    except (ValueError, TypeError, RuntimeError) as error:
+        return JsonResponse({"error": str(error)}, status=400)
 
     return JsonResponse(data)
 

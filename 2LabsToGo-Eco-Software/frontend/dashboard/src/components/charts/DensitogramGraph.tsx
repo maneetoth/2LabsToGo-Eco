@@ -5,7 +5,8 @@ import {
 
   PreprocessedOutput,
 } from "@/utils/preprocessing";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
+import { hrfTicks, toHrf } from "@/utils/quantTlcIntegration";
 
 type BandData = {
   red: number[];
@@ -14,11 +15,11 @@ type BandData = {
   grayscale: number[];
 };
 
-const formatDensitogramData = (bandData: BandData) => {
+const formatDensitogramData = (bandData: BandData, useHrfScale: boolean) => {
   const length = bandData?.red?.length || 0;
 
   return Array.from({ length }).map((_, index) => ({
-    hRF: index,
+    hRF: useHrfScale ? toHrf(index, length) : index,
     red: bandData.red[index],
     green: bandData.green[index],
     blue: bandData.blue[index],
@@ -31,41 +32,19 @@ interface DensitogramGraphProps {
   bandStep: number | string;
   preprocessing: string[];
   onProcessedData?: (data: any) => void;
+  useHrfScale?: boolean;
   densitogram: PreprocessedOutput
 }
 
 const DensitogramGraph = ({
   bandStep,
-  preprocessing,
+  useHrfScale = false,
   onProcessedData,
   densitogram
 }: DensitogramGraphProps) => {
-  const { data, loading, error } = useSelector((state: RootState) => state.data);
+  const { loading, error } = useSelector((state: RootState) => state.data);
+  const bandData = densitogram?.[bandStep];
 
-
- 
-  const bandData = densitogram ? densitogram?.[bandStep] : undefined;
-  console.log('in desitigram');
-
-  
-  
-  
-  
-  const densitogramData = useMemo(() => {
-    if (!bandData) return [];
-    
-    return formatDensitogramData({
-      red: bandData.red,
-      green:bandData.green,
-      blue: bandData.blue,
-      grayscale:bandData.grayscale,
-    });
-    
-  }, [bandData]);
-  
-  
-  
-  // ...existing code...
   useEffect(() => {
     if (onProcessedData && bandData) {
       onProcessedData({
@@ -76,36 +55,27 @@ const DensitogramGraph = ({
       });
     }
   }, [onProcessedData, bandData]);
-  // ...existing code...
   if (loading) return <p>Loading...</p>;
   if (error) return <p>Error: {error}</p>;
-  // if (!data?.densitogram_data) return <p>No densitogram data available</p>;
-  if (!bandData) return <p>No data for band {bandStep}</p>;
-  
-  const formatedDensitogram = formatDensitogramData({
-    red: bandData.red,
-    green: bandData.green,
-    blue: bandData.blue,
-    grayscale: bandData.grayscale,
-  });
-  
-  console.log(bandData);
-  console.log('after sinsitogram');
-  console.log(formatedDensitogram);
-  
-  
-  
- 
+  if (!bandData) return <p>No data for track {bandStep}</p>;
+
+  const formattedDensitogram = formatDensitogramData(bandData, useHrfScale);
 
   return (
-    formatedDensitogram.length > 0 && (
+    formattedDensitogram.length > 0 && (
       <div className="mt-6 w-full max-w-2xl">
         <h2 className="text-xl font-semibold text-center">Densitogram</h2>
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={formatedDensitogram}>
-            <XAxis dataKey="hRF" label={{ value: "hRF", position: "insideBottom", offset: -5 }} />
+          <LineChart data={formattedDensitogram}>
+            <XAxis
+              dataKey="hRF"
+              type={useHrfScale ? "number" : "category"}
+              domain={useHrfScale ? [0, 100] : undefined}
+              ticks={useHrfScale ? hrfTicks : undefined}
+              label={{ value: useHrfScale ? "hRF" : "Pixel Index (hRF)", position: "insideBottom", offset: -5 }}
+            />
             <YAxis label={{ value: "Pixel Intensity (AU)", angle: -90, position: "insideLeft" }} />
-            <Tooltip />
+            <Tooltip labelFormatter={useHrfScale ? value => `hRF ${Number(value).toFixed(1)}` : undefined} />
             <Legend />
             <Line type="monotone" dataKey="red" stroke="red" strokeWidth={2} name="Red" dot={false}  />
             <Line type="monotone" dataKey="green" stroke="green" strokeWidth={2} name="Green" dot={false} />

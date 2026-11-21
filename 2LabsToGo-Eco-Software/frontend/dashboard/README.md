@@ -43,7 +43,7 @@ Create a local env file (optional):
 cp .env.template .env.local
 ```
 
-Set `NEXT_PUBLIC_API_BASE_URL` in `.env.local` to point at your backend (defaults to `http://127.0.0.1:8000`).
+The Docker dashboard uses the same origin through Nginx. When running Next.js directly, set `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000` in `.env.local` to reach a separately running Django backend.
     
 ## Core Libraries Used
 

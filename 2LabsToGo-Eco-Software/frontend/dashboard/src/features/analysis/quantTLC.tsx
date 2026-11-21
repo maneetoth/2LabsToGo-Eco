@@ -3,14 +3,11 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import IndividualLineChart from "@/components/charts/IndividualLineChart";
-import D3InteractiveChart, { D3InteractiveChartHandle, PeakAreaChangeInfo, EditPeakIntegrationInfo, BatchAddPeaksInfo } from "@/components/charts/peak-linechart";
-import * as d3 from "d3";
-import ImageCropper from "@/components/Image/ImageCropper";
+import D3InteractiveChart from "@/components/charts/peak-linechart";
+import QuantTLCImages from "./quantTLCImages";
+import { toHrf, type PeakBounds } from "@/utils/quantTlcIntegration";
 import { useDispatch, useSelector } from 'react-redux'
 import { RootState } from "@/lib/store";
-import { ArrowLeftIcon, ArrowRightIcon } from "@heroicons/react/24/outline";
 import DensitogramGraph from "@/components/charts/DensitogramGraph";
 import jsPDF from "jspdf";
 
@@ -22,26 +19,20 @@ import {
   preprocessAllTracksAPI,
   PreprocessedOutput,
 } from "@/utils/preprocessing";
-import { detectPeaks, isPeakInAllTracks, PeakDetectionParams, processAllBands, processAllTracksFromPreprocessed, validatePeakSelection, DataPoint } from "@/utils/peakDetection";
-import { ChannelName } from "@/utils/peakDetection"; 
-import { Sriracha } from "next/font/google";
+import type { ChannelName, DataPoint } from "@/utils/peakDetection";
 import {
   PeakDetectionApiResponse,
   PeakDetectionApiParams,
   AllTracksChartPeaks,
   ChartPeak,
-  ChangeAreaItem,
   EditPeakIntegrationItem,
   transformApiPeaksToChartPeaks,
   getChannelPeaks,
+  findClosestPeak,
 } from "@/types/peakApi";
-import { validateHeaderValue } from "http";
-import CalibrationCurve from "@/components/charts/Calibration";
-import { base64ToDataUrl } from "@/utils/cropImage";
 import { apiUrl } from "@/utils/api";
 // ...existing code...
 import axios from "axios";
-import { log } from "console";
 
 
 import autoTable from "jspdf-autotable";
@@ -433,6 +424,7 @@ function getApiErrorMessage(err: unknown): string {
   type CalibrationPredictions = {
     equation?: string;
     concentrations?: number[];
+    input_indices?: number[];
   };
   
   type CalibrationResult = {
@@ -441,6 +433,9 @@ function getApiErrorMessage(err: unknown): string {
     model_type?: string;
     plot_base64?: string;
     predictions?: CalibrationPredictions;
+    half_max_dose?: number;
+    half_max_dose_extrapolated?: boolean;
+    unknownTracks: number[];
   };
   
 const QuantTLC: React.FC = () => {
@@ -462,7 +457,6 @@ const QuantTLC: React.FC = () => {
   };
     const router = useRouter();
     const searchParams = useSearchParams();
-    const imageUrl = searchParams.get("image"); // Get the image URL from search params
 const dispatch = useDispatch<AppDispatch>()
 const [step, setStep] = useState(1);
 const [bandStep, setBandStep] = useState(1);
@@ -478,34 +472,17 @@ const [selectedStandards, setSelectedStandards] = useState<Record<string, boolea
 const [tracksToCalibrate, setTracksToCalibrate] = useState<Record<string, boolean>>({});
 // ...existing code...
 const [selectedBandData, setSelectedBandData] = useState<[number] | null>(null);
-const [standardData, setStandardData] = useState<{ [channelName: string]: DataPoint[] }>({});
 const [refresh, setRefresh] = useState(false);
 const [allPeaks, setAllPeaks] = useState<{ [channelName: string]: DataPoint[] }>({});
-const [showCurve, setShowCurve] = useState(false);
-const [quantityValues, setQuantityValues] = useState<Record<number, number>>({});
 const [autoPeakValues, setAutoPeakValues] = useState<Record<number, number>>({});
 const [selectedPeak, setSelectedPeak] = useState<{ channel: ChannelName; band: number; peak: DataPoint } | null>(null);
-const [selectedPeakData, setSelectedPeakData] = useState<{ [channelName: string]: DataPoint[] } | null>(null);
-// Regions stored per channel to avoid cross-channel churn
-type RegionWithArea = { x0: number; x1: number; area?: number; channel?: string };
-const [regionsByChannel, setRegionsByChannel] = useState<Record<string, RegionWithArea[]>>({});
-// Track region areas per track (band) and channel
-const [regionAreasByTrack, setRegionAreasByTrack] = useState<Record<number, Record<string, number>>>({});
-
-const [calibrationResult, setCalibrationResult] = useState<CalibrationResult | null>(null);;
-const [peakParams, setPeakParams] = useState<PeakDetectionParams>({
-  minIncreasingSteps: 10,
-  minDecreasingSteps: 10,
-  minPeakHeight: 0.1,
-  hrfRange: [0, 1000],
-});
-const [regions, setRegions] = useState([]);
+const [calibrationResult, setCalibrationResult] = useState<CalibrationResult | null>(null);
+const calibrationRequest = useRef(0);
 // hRF Range tolerance for matching peaks across tracks
 const [hRFRangeTolerance, setHRFRangeTolerance] = useState<number>(20);
 // Quantity metric: choose between peak height and integrated area under the peak
 const [quantityMetric, setQuantityMetric] = useState<'height' | 'area'>('height');
 // Window (in samples) to integrate around peak x when using area
-const [areaWindow, setAreaWindow] = useState<number>(5);
 const [preprocessedData, setPreprocessedData] = useState<PreprocessedOutput | null>(null);
 
 // API-based peak detection state
@@ -530,39 +507,12 @@ const [apiPeaksLoading, setApiPeaksLoading] = useState(false);
 const [preprocessLoading, setPreprocessLoading] = useState(false);
 const [calibrationLoading, setCalibrationLoading] = useState(false);
 
-// Helper function to merge new API response with existing state
-// This preserves data from channels that were not modified
-const mergeApiPeaksResponse = useCallback((newResponse: PeakDetectionApiResponse) => {
-  setApiPeaksResponse(prevResponse => {
-    if (!prevResponse) {
-      // No previous response, use the new one as-is
-      return newResponse;
-    }
-    
-    // Deep merge: preserve existing tracks/channels, update with new data
-    const merged: PeakDetectionApiResponse = { ...prevResponse };
-    
-    for (const trackKey of Object.keys(newResponse)) {
-      if (!merged[trackKey]) {
-        // New track, add it
-        merged[trackKey] = newResponse[trackKey];
-      } else {
-        // Existing track, merge channels
-        merged[trackKey] = { ...merged[trackKey] };
-        const newTrack = newResponse[trackKey];
-        
-        for (const channelKey of Object.keys(newTrack) as Array<keyof typeof newTrack>) {
-          // Update/replace channel data from new response
-          merged[trackKey][channelKey] = newTrack[channelKey];
-        }
-      }
-    }
-    
-    console.log('[quantTLC] Merged API response:', merged);
-    return merged;
-  });
-}, []);
-
+const integrationJournal = useRef<{ edits: EditPeakIntegrationItem[]; clearedTracks: string[] }>({
+  edits: [], clearedTracks: [],
+});
+const peakRequest = useRef<AbortController | null>(null);
+const preprocessingRequest = useRef(0);
+const [addingPeaks, setAddingPeaks] = useState(false);
 // Transformed peaks ready for chart consumption
 const apiChartPeaks = useMemo<AllTracksChartPeaks>(() => {
   if (!apiPeaksResponse) return {};
@@ -581,13 +531,6 @@ const modelOptions: { value: CalibrationModel; label: string }[] = [
   {value: 'poly2', label: 'Polynomial' }
 ];
 // .
-
-type SelectedPeakState = {
-  channel: string;
-  peak: any; // adjust type if you know it
-};
-
-const [selectedPeakNew, setSelectedPeakNew] = useState<SelectedPeakState | null>(null);
 
 const [advancedOptions, setAdvancedOptions] = useState({
   smoothing: {
@@ -608,7 +551,6 @@ const [advancedOptions, setAdvancedOptions] = useState({
     seg_len: '100',
   },
 });
-console.log("advanced options ", advancedOptions);
 
   type QuantFormData = {
     real_width_mm: string;
@@ -634,15 +576,6 @@ console.log("advanced options ", advancedOptions);
     });
     const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
 
-const peakRef = useRef<{ [channelName: string]: DataPoint[] }>({});
-const chartRef = useRef<D3InteractiveChartHandle>(null);
-// const params: PeakDetectionParams = {
-//     minIncreasingSteps: 5,
-//     minDecreasingSteps: 5,
-//     minPeakHeight: -0.5,
-//     hrfRange: [0, 1000],
-//   };   
-
 // Add UI alert state
 const [uiAlert, setUiAlert] = useState<{ type: 'warning' | 'error' | 'success'; message: string } | null>(null);
 const alertTimerRef = useRef<number | undefined>(undefined);
@@ -652,25 +585,6 @@ const notify = useCallback((type: 'warning' | 'error' | 'success', message: stri
   alertTimerRef.current = window.setTimeout(() => setUiAlert(null), 5000) as unknown as number;
 }, []);
 // ...existing code...
-
-console.log("peakref",peakRef.current)
-console.log('#2#2#2#2#2#2#2#2#2#2#2#');
-// console.log(peaksByChannel, regionsByChannel, selectedPeakByChannel);
-// console.log('#2#2#2#2#2#2#2#2#2#2#2#');
-// console.log(peaksByChannel);
-// console.log('#2#2#2#2#2#2#2#2#2#2#2#');
-// console.log(selectedPeakByChannel);
-const prevSelectedPeakRef = useRef<Record<string, any[]>>({});
-const clone = <T,>(obj: T) => JSON.parse(JSON.stringify(obj));
-
-const isSamePeakArray = (a?: any[], b?: any[]) => {
-  if (!Array.isArray(a) && !Array.isArray(b)) return true;
-  if (!Array.isArray(a) || !Array.isArray(b)) return false;
-  if (a.length !== b.length) return false;
-  // You keep only one item per channel; compare that one
-  if (a.length === 0 && b.length === 0) return true;
-  return JSON.stringify(a[0]) === JSON.stringify(b[0]);
-};
 
 const baselineDefaults: Record<string, Record<string, string>> = {
   IRLS: { lambda1: "", lambda2: "", wi: "", max_iter: "" },
@@ -798,40 +712,7 @@ const buildPreprocessOption = () => {
   };
 };
 
-const handleSaveAdvancedOptions = async () => {
-  try {
-    // Normalize to backend step names
-    const preprocessOrder = selectedPreprocessing.map((v: PreprocessValue) =>
-      v === 'smoothing' ? 'Smoothing' : v === 'warping' ? 'Warping' : v
-    );
-
-    const preprocessOption = buildPreprocessOption();
-    if (!selectedPreprocessing.includes('baseline')) delete (preprocessOption as any).baseline;
-    if (!selectedPreprocessing.includes('smoothing')) delete (preprocessOption as any).Smoothing;
-    if (!selectedPreprocessing.includes('warping')) delete (preprocessOption as any).Warping;
-
-    // allTracks should be your raw densitogram input per track/channel
-    // e.g., const allTracks: AllTracksInput = { "1": { red: [...], green: [...], ... }, ... }
-    const processed = await preprocessAllTracksAPI(
-      bandData,                // <-- make sure this exists in your component
-      preprocessOrder,
-      preprocessOption
-    );
-
-    // TODO: set the processed data into state or pass it forward
-    setPreprocessedData(processed);
-    // close modal
-    (document.getElementById('advanced_modal') as HTMLDialogElement)?.close();
-  } catch (e) {
-    console.error(e);
-    notify('error', `Preprocessing failed: ${getApiErrorMessage(e)}`);
-  }
-};
-
-
-
 const { data, loading, error } = useSelector((state: RootState) => state.data)    
-console.log('data',data );
 // Safely normalize densitogram data (can be object or JSON string)
 const bandData = useMemo(() => {
   const raw = data?.densitogram_data;
@@ -862,174 +743,24 @@ useEffect(() => {
     setStep(1);
   }
 }, [loading, bandData]);
- // Ensure hook always runs; internal conditional sets state only when data is ready
- useEffect(() => {
-  if (!loading && !error && data?.densitogram_data) {
-    setPreprocessedData(data.densitogram_data);
-  }
- }, [loading, error, data?.densitogram_data]);
-let allPeaksData = {};
+const rawSignals = useMemo<PreprocessedOutput | null>(() => {
+  if (!bandData) return null;
+  const signal = (values: number[]) => values.map(value => 1 - value);
+  return Object.fromEntries(Object.entries(bandData as Record<string, Record<ChannelName, number[]>>)
+    .map(([track, channels]) => [track, {
+      red: signal(channels.red),
+      green: signal(channels.green),
+      blue: signal(channels.blue),
+      grayscale: signal(channels.grayscale),
+    }]));
+}, [bandData]);
 
-const allPeaksRef = useRef<{
-  red: DataPoint[];
-  green: DataPoint[];
-  blue: DataPoint[];
-  grayscale: DataPoint[];
-}>({
-  red: [],
-  green: [],
-  blue: [],
-  grayscale: [],
-});
-
-
-function convertChannelDataToDensitogramArray(channelData: { [channel: string]: DataPoint[] }): { hRF: number; red: number; green: number; blue: number; grayscale: number }[] {
-  
-  console.log('convertChannelDataToDensitogramArray ****',channelData);
-  
-
-  const length = Math.max(
-    channelData.red?.length ?? 0,
-    channelData.green?.length ?? 0,
-    channelData.blue?.length ?? 0,
-    channelData.grayscale?.length ?? 0
-  );
-  return Array.from({ length }).map((_, i) => ({
-    hRF: i,
-    red: channelData.red?.[i]?.y ?? 0,
-    green: channelData.green?.[i]?.y ?? 0,
-    blue: channelData.blue?.[i]?.y ?? 0,
-    grayscale: channelData.grayscale?.[i]?.y ?? 0,
-  }));
-}
-
-const handleProcessedData = (processeddata: { [channel: string]: DataPoint[] }) => {
-  console.log('processeddata &&&&&&&&', processeddata);
-  const densitogramArray = convertChannelDataToDensitogramArray(processeddata);
-  console.log('densitogramaraay', densitogramArray);
-  
-  const allPeaks = processAllBands(densitogramArray, peakParams);
-  allPeaksRef.current = allPeaks;
-};
-
-// Handler for when a peak is selected in the chart - updates selectedPeak state immediately
-const handlePeakSelect = useCallback((peak: DataPoint, channelName: string) => {
-  console.log('[handlePeakSelect] Peak selected:', peak, 'Channel:', channelName);
-  const newSelectedPeak = {
-    channel: channelName as ChannelName,
-    band: bandStep,
-    peak: peak,
-  };
-  setSelectedPeak(newSelectedPeak);
-  console.log('[handlePeakSelect] Updated selectedPeak state:', newSelectedPeak);
-}, [bandStep]);
-
-const handleRegionsChange = useCallback((newRegions: RegionWithArea[]) => {
-  if (!newRegions || newRegions.length === 0) return;
-  const ch = newRegions[0].channel || 'unknown';
-  setRegionsByChannel(prev => {
-    const existing = prev[ch] || [];
-    const sameLen = existing.length === newRegions.length;
-    const sameContent = sameLen && existing.every((r, i) => r.x0 === newRegions[i].x0 && r.x1 === newRegions[i].x1 && r.area === newRegions[i].area);
-    if (sameContent) return prev; // no real change
-    return { ...prev, [ch]: newRegions };
-  });
-  
-  // Calculate and store total region area for current track and channel
-  const totalArea = newRegions.reduce((sum, r) => sum + (r.area || 0), 0);
-  const trackIndex = bandStep - 1;
-  setRegionAreasByTrack(prev => ({
-    ...prev,
-    [trackIndex]: {
-      ...prev[trackIndex],
-      [ch]: totalArea
-    }
-  }));
-}, [bandStep]);
-
-// Debug: compact signature to see actual updates
 useEffect(() => {
-  const sig = Object.entries(regionsByChannel).map(([c, regs]) => `${c}(${regs.length})`).join(', ');
-  if (sig) console.log('📥 Regions updated:', sig);
-  console.log('📊 Region areas by track:', regionAreasByTrack);
-}, [regionsByChannel, regionAreasByTrack]);
-
-
-
-// const handleProcessedData = (processeddata) => {
-// const allPeaks = processAllBands(processeddata, params);
-//   // console.log("Received from child and all peaks processed:", allPeaks);
-// // setAllPeaks(allPeaks); // Store all peaks in state
-// allPeaksData = allPeaks; // Store all peaks in a variable
-// console.log('allPeaksData',allPeaksData);
-
-
-
-// const mockallPeaksData = {
-//   band1: {
-//     red: [{ x: 10, y: 0.8 }, { x: 50, y: 0.6 }],
-//     green: [{ x: 533, y: 0.68 }, { x: 100, y: 0.5 }],
-//     blue: [{ x: 30, y: 0.4 }],
-//     grayscale: [{ x: 60, y: 0.7 }],
-//   },
-//   band2: {
-//     red: [{ x: 10, y: 0.7 }],
-//     green: [{ x: 532, y: 0.65 }], // within ±1 of 533
-//     blue: [{ x: 25, y: 0.5 }],
-//     grayscale: [{ x: 60, y: 0.6 }],
-//   },
-// };
-// const selectedPeak = {
-//   x: 533,
-//   y: 0.6835687812214643,
-//   channel: "green" as const, // narrowed type
-// };
-
-// // ✅ Validate it
-// const isValid = validatePeakSelection(mockallPeaksData, selectedPeak, 2);
-
-// console.log("Is selected peak valid across multiple tracks?", isValid);
-//   // You can store it in state or perform other logic
-// };
-// useEffect(() => {
-
-function computePeakArea(data: { x: number; y: number }[], peakX: number, window = 5) {
-  // Find the index of the peak
-  const peakIdx = data.findIndex(d => d.x === peakX);
-  if (peakIdx === -1) return 0;
-
-  // Define integration window
-  const leftIdx = Math.max(peakIdx - window, 0);
-  const rightIdx = Math.min(peakIdx + window, data.length - 1);
-
-  let area = 0;
-  for (let i = leftIdx; i < rightIdx; i++) {
-    const dx = data[i + 1].x - data[i].x;
-    const avgY = (data[i].y + data[i + 1].y) / 2;
-    area += dx * avgY;
-  }
-  return area;
-}
-
-// Unified quantity extraction given metric selection
-function getPeakQuantity(
-  bandDataArr: { x: number; y: number }[],
-  peak: DataPoint,
-  metric: 'height' | 'area',
-  areaWindow: number
-): number {
-  if (!peak) return 0;
-  if (metric === 'height') return Number.isFinite(peak.y) ? peak.y : 0;
-  return computePeakArea(bandDataArr, peak.x, areaWindow);
-}
-
-
-
-
-// }, [data]); 
-
-
-  console.log("BAND", bandData);
+  preprocessingRequest.current++;
+  setPreprocessLoading(false);
+  setBandStep(1);
+  setPreprocessedData(rawSignals);
+}, [rawSignals]);
 
   const totalTracks =
     bandData && typeof bandData === "object" ? Object.keys(bandData as any).length : 0;
@@ -1064,7 +795,6 @@ const calibrateImg = useMemo(() => {
   const b64 = (calibrationResult as any)?.plot_base64;
   return b64 ? toDataUrl(b64, "image/png") : "";
 }, [calibrationResult]);
-console.log('calibrateImg', calibrateImg);
 // --- Types (optional but nice)
 // Use the imported `ChannelName` from utils/peakDetection (avoid redeclaring)
 type BandEntry = Record<ChannelName, number[]> & { band_image: string };
@@ -1082,32 +812,29 @@ const markedImg = (data as any)?.marked_image ? toDataUrl((data as any).marked_i
 
 
 
-console.log('current');
-console.log(currentEntry);
 
 
 
 const handlePreProcess = async () => {
+  if (!rawSignals || preprocessLoading) return;
+  const request = ++preprocessingRequest.current;
   setPreprocessLoading(true);
   try {
-    const preprocessOrder = selectedPreprocessing.map((v: PreprocessValue) =>
-      v === 'smoothing' ? 'Smoothing' : v === 'warping' ? 'Warping' : v
+    const steps = selectedPreprocessing.map(value =>
+      value === "smoothing" ? "Smoothing" : value === "warping" ? "Warping" : value,
     );
-    console.log(preprocessOrder);
-
-    const preprocessOption = buildPreprocessOption();
-    if (!selectedPreprocessing.includes('baseline')) delete (preprocessOption as any).baseline;
-    if (!selectedPreprocessing.includes('smoothing')) delete (preprocessOption as any).Smoothing;
-    if (!selectedPreprocessing.includes('warping')) delete (preprocessOption as any).Warping;
-
-    const data = await preprocessAllTracksAPI(bandData, preprocessOrder, preprocessOption);
-    // <- here you have the processed data (not a Promise)
-    setPreprocessedData(data);
-  } catch (e) {
-    console.error(e);
-    notify('error', `Preprocessing failed: ${getApiErrorMessage(e)}`);
+    const processed = steps.length
+      ? await preprocessAllTracksAPI(rawSignals, steps, buildPreprocessOption())
+      : rawSignals;
+    if (request !== preprocessingRequest.current) return;
+    setPreprocessedData(previous => JSON.stringify(previous) === JSON.stringify(processed) ? previous : processed);
+    (document.getElementById("advanced_modal") as HTMLDialogElement)?.close();
+  } catch (error) {
+    if (request === preprocessingRequest.current) {
+      notify("error", `Preprocessing failed: ${getApiErrorMessage(error)}`);
+    }
   } finally {
-    setPreprocessLoading(false);
+    if (request === preprocessingRequest.current) setPreprocessLoading(false);
   }
 };
 
@@ -1136,550 +863,147 @@ const buildApiPeakParamsForRequest = useCallback(
   [apiPeakParams, maxPeakHeight]
 );
 
-// API call to fetch peaks from server
-const fetchPeaksFromApi = useCallback(async () => {
-  if (!preprocessedData) {
-    console.warn('No preprocessed data available for peak detection');
-    return;
-  }
+const bandKey = String(bandStep);
 
+const requestIntegratedPeaks = useCallback(async (journal = integrationJournal.current) => {
+  if (!preprocessedData || peakRequest.current) return;
+  const controller = new AbortController();
+  peakRequest.current = controller;
   setApiPeaksLoading(true);
   try {
-    const requestBody = {
-      params: buildApiPeakParamsForRequest(),
-      processed_data: preprocessedData,
-    };
-
-    const response = await axios.post<PeakDetectionApiResponse>(
-      apiUrl('/peak_integration/'),
-      requestBody,
-      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
-    );
-
-    if (response.status !== 200) {
-      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
-    }
-
-    console.log('Peak Detection API Response:', response.data);
-    setApiPeaksResponse(response.data);
-    notify('success', 'Peak detection completed.');
-  } catch (err) {
-    console.error('Peak Detection API error:', err);
-    notify('error', `Peak detection failed: ${getApiErrorMessage(err)}`);
-  } finally {
-    setApiPeaksLoading(false);
-  }
-}, [preprocessedData, buildApiPeakParamsForRequest, notify]);
-
-// Handler for peak area changes from the chart component
-const handlePeakAreaChange = useCallback(async (changeInfo: PeakAreaChangeInfo) => {
-  if (!preprocessedData) {
-    console.warn('No preprocessed data available for peak area change');
-    return;
-  }
-
-  console.log('Peak area changed:', changeInfo);
-
-  // Create the change_area item for API
-  const changeAreaItem: ChangeAreaItem = {
-    band_key: changeInfo.bandKey,
-    channel_name: changeInfo.channelName,
-    peak_index: changeInfo.peakIndex,
-    new_start: changeInfo.newStart,
-    new_end: changeInfo.newEnd,
-  };
-
-  // Accumulate changes so subsequent edits don't revert earlier ones.
-  // Identity: (band_key, channel_name, peak_index)
-  const prevChangeAreas = apiPeakParams.change_area ?? [];
-  const changeKey = (c: ChangeAreaItem) => `${c.band_key}::${c.channel_name}::${c.peak_index}`;
-  const nextChangeAreas: ChangeAreaItem[] = (() => {
-    const key = changeKey(changeAreaItem);
-    const deduped = prevChangeAreas.filter((c: ChangeAreaItem) => changeKey(c) !== key);
-    return [...deduped, changeAreaItem];
-  })();
-
-  setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, change_area: nextChangeAreas }));
-
-  // Update params with the change_area and call API
-  setApiPeaksLoading(true);
-  try {
-    const requestBody = {
-      params: {
-        ...buildApiPeakParamsForRequest({ change_area: nextChangeAreas }),
-        change_area: nextChangeAreas,
+    const { data: result } = await axios.post<PeakDetectionApiResponse>(
+      apiUrl("/peak_integration/"),
+      {
+        processed_data: preprocessedData,
+        params: buildApiPeakParamsForRequest({
+          edit_peak_integration: journal.edits,
+          clear_automatic_tracks: journal.clearedTracks,
+        }),
       },
-      processed_data: preprocessedData,
-    };
-
-    console.log('Sending peak area change request:', requestBody);
-
-    const response = await axios.post<PeakDetectionApiResponse>(
-      apiUrl('/peak_integration/'),
-      requestBody,
-      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+      { timeout: 30000, signal: controller.signal },
     );
-
-    if (response.status !== 200) {
-      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
+    if (controller.signal.aborted) return;
+    integrationJournal.current = journal;
+    setApiPeaksResponse(result);
+    setSelectedPeak(current => {
+      if (!current) return null;
+      const peak = result[String(current.band)]?.[current.channel]?.[current.peak.x];
+      return peak ? { ...current, peak: { x: peak.peak_x, y: peak.peak_height } } : null;
+    });
+    setCalibrationResult(null);
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      notify("error", `Peak integration failed: ${getApiErrorMessage(error)}`);
     }
-
-    console.log('Peak Area Change API Response:', response.data);
-    mergeApiPeaksResponse(response.data);
-    notify('success', 'Peak area updated successfully.');
-  } catch (err) {
-    console.error('Peak Area Change API error:', err);
-    notify('error', `Peak area update failed: ${getApiErrorMessage(err)}`);
   } finally {
-    setApiPeaksLoading(false);
-  }
-}, [preprocessedData, apiPeakParams, notify, mergeApiPeaksResponse, buildApiPeakParamsForRequest]);
-
-// Handler for edit_peak_integration API (update, add, delete operations)
-const handleEditPeakIntegration = useCallback(async (editInfo: EditPeakIntegrationInfo) => {
-  if (!preprocessedData) {
-    console.warn('No preprocessed data available for peak integration edit');
-    return;
-  }
-
-  console.log('Edit peak integration:', editInfo);
-
-  // Build the edit_peak_integration item for API
-  const editItem: EditPeakIntegrationItem = {
-    edit_type: editInfo.editType as any,
-    band_key: editInfo.bandKey,
-    channel_name: editInfo.channelName,
-    peak_x: editInfo.peakIndex,
-  };
-
-  // Add new_start and new_end only for 'add' and 'update' operations
-  if (editInfo.editType === 'add' || editInfo.editType === 'update') {
-    editItem.new_start = editInfo.newStart;
-    editItem.new_end = editInfo.newEnd;
-  }
-
-  // Accumulate edit_peak_integration items so updates to multiple peaks persist.
-  // Identity: (band_key, channel_name, peak_x)
-  const prevEdits = apiPeakParams.edit_peak_integration ?? [];
-  const editKey = (e: any) => `${e.band_key}::${e.channel_name}::${e.peak_x}`;
-  const nextEdits: EditPeakIntegrationItem[] = (() => {
-    const key = editKey(editItem);
-    const deduped = (prevEdits as EditPeakIntegrationItem[]).filter((e: EditPeakIntegrationItem) => editKey(e) !== key);
-    return [...deduped, editItem];
-  })();
-
-  setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: nextEdits }));
-
-  setApiPeaksLoading(true);
-  try {
-    const requestBody = {
-      params: buildApiPeakParamsForRequest({ edit_peak_integration: nextEdits }),
-      processed_data: preprocessedData,
-    };
-
-    console.log('Sending edit_peak_integration request:', requestBody);
-
-    const response = await axios.post<PeakDetectionApiResponse>(
-      apiUrl('/peak_integration/'),
-      requestBody,
-      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
-    );
-
-    if (response.status !== 200) {
-      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
+    if (peakRequest.current === controller) {
+      peakRequest.current = null;
+      setApiPeaksLoading(false);
     }
-
-    console.log('Edit Peak Integration API Response:', response.data);
-    mergeApiPeaksResponse(response.data);
-    
-    const actionLabel = editInfo.editType === 'add' ? 'added' : 
-                        editInfo.editType === 'delete' ? 'deleted' : 'updated';
-    notify('success', `Peak ${actionLabel} successfully.`);
-  } catch (err) {
-    console.error('Edit Peak Integration API error:', err);
-    notify('error', `Peak ${editInfo.editType} failed: ${getApiErrorMessage(err)}`);
-  } finally {
-    setApiPeaksLoading(false);
   }
-}, [preprocessedData, apiPeakParams, buildApiPeakParamsForRequest, notify, mergeApiPeaksResponse]);
+}, [buildApiPeakParamsForRequest, notify, preprocessedData]);
 
-// Handler for batch adding multiple peaks at once
-const handleBatchAddPeaks = useCallback(async (batchInfo: BatchAddPeaksInfo) => {
-  if (!preprocessedData) {
-    console.warn('No preprocessed data available for batch add peaks');
-    return;
-  }
-
-  if (batchInfo.newPeaks.length === 0) {
-    console.warn('No new peaks to add');
-    return;
-  }
-
-  console.log('Batch add peaks:', batchInfo);
-
-  // Build array of edit_peak_integration items for all new peaks
-  const editItems: EditPeakIntegrationItem[] = batchInfo.newPeaks.map(peak => ({
-    edit_type: 'add',
-    band_key: batchInfo.bandKey,
-    channel_name: batchInfo.channelName,
-    peak_x: peak.peakX,
-    new_start: peak.newStart,
-    new_end: peak.newEnd,
-  }));
-
-  setApiPeaksLoading(true);
-  try {
-    const prevEdits = apiPeakParams.edit_peak_integration ?? [];
-    const editKey = (e: any) => `${e.band_key}::${e.channel_name}::${e.peak_x}`;
-    const mergedEdits = [...prevEdits];
-    for (const item of editItems) {
-      const key = editKey(item);
-      const idx = mergedEdits.findIndex((e: any) => editKey(e) === key);
-      if (idx >= 0) mergedEdits[idx] = item;
-      else mergedEdits.push(item);
-    }
-    setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits as EditPeakIntegrationItem[] }));
-
-    const requestBody = {
-      params: buildApiPeakParamsForRequest({ edit_peak_integration: mergedEdits }),
-      processed_data: preprocessedData,
-    };
-
-    console.log('Sending batch add peaks request:', requestBody);
-
-    const response = await axios.post<PeakDetectionApiResponse>(
-      apiUrl('/peak_integration/'),
-      requestBody,
-      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
-    );
-
-    if (response.status !== 200) {
-      throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
-    }
-
-    console.log('Batch Add Peaks API Response:', response.data);
-    mergeApiPeaksResponse(response.data);
-    
-    notify('success', `${batchInfo.newPeaks.length} peak(s) added successfully.`);
-  } catch (err) {
-    console.error('Batch Add Peaks API error:', err);
-    notify('error', `Adding peaks failed: ${getApiErrorMessage(err)}`);
-  } finally {
-    setApiPeaksLoading(false);
-  }
-}, [preprocessedData, apiPeakParams, buildApiPeakParamsForRequest, notify, mergeApiPeaksResponse]);
-
-// Cross-channel add peak mode state
-const [globalAddPeakMode, setGlobalAddPeakMode] = useState(false);
-// Track all newly added regions across all channels
-const allNewRegionsRef = useRef<{ x0: number; x1: number; peakX: number; channelName: string }[]>([]);
-
-// Handler for when a new region is added in any channel
-const handleNewRegionAdded = useCallback((region: { x0: number; x1: number; peakX: number; channelName: string }) => {
-  allNewRegionsRef.current = [...allNewRegionsRef.current, region];
-  console.log('[quantTLC] New region added across channels:', region, 'Total:', allNewRegionsRef.current.length);
-}, []);
-
-// Handler for add peak mode toggle - syncs across all channels
-const handleAddPeakModeToggle = useCallback(async (isAddMode: boolean) => {
-  if (isAddMode) {
-    // Entering add mode - clear previous regions
-    allNewRegionsRef.current = [];
-    console.log('[quantTLC] Entering global add peak mode');
-  } else {
-    // Exiting add mode - send all regions from all channels
-    const allRegions = allNewRegionsRef.current;
-    console.log('[quantTLC] Exiting global add peak mode, all regions:', allRegions);
-    
-    if (allRegions.length > 0 && preprocessedData && bandStep !== undefined) {
-      // Group regions by channel
-      const editItems: EditPeakIntegrationItem[] = allRegions.map(region => ({
-        edit_type: 'add',
-        band_key: String(bandStep),
-        channel_name: region.channelName,
-        peak_x: region.peakX,
-        new_start: Math.round(region.x0),
-        new_end: Math.round(region.x1),
-      }));
-      
-      setApiPeaksLoading(true);
-      try {
-        const prevEdits = apiPeakParams.edit_peak_integration ?? [];
-        const editKey = (e: any) => `${e.band_key}::${e.channel_name}::${e.peak_x}`;
-        const mergedEdits = [...prevEdits];
-        for (const item of editItems) {
-          const key = editKey(item);
-          const idx = mergedEdits.findIndex((e: any) => editKey(e) === key);
-          if (idx >= 0) mergedEdits[idx] = item;
-          else mergedEdits.push(item);
-        }
-        setApiPeakParams((prev: PeakDetectionApiParams) => ({ ...prev, edit_peak_integration: mergedEdits as EditPeakIntegrationItem[] }));
-
-        const requestBody = {
-          params: buildApiPeakParamsForRequest({ edit_peak_integration: mergedEdits }),
-          processed_data: preprocessedData,
-        };
-
-        console.log('[quantTLC] Sending cross-channel batch add peaks request:', requestBody);
-
-        const response = await axios.post<PeakDetectionApiResponse>(
-          apiUrl('/peak_integration/'),
-          requestBody,
-          { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
-        );
-
-        if (response.status !== 200) {
-          throw new Error(formatNon200AxiosResponse({ status: response.status, statusText: response.statusText, data: response.data }));
-        }
-
-        console.log('[quantTLC] Cross-channel Batch Add Peaks API Response:', response.data);
-        mergeApiPeaksResponse(response.data);
-        
-        notify('success', `${allRegions.length} peak(s) added across channels successfully.`);
-      } catch (err) {
-        console.error('[quantTLC] Cross-channel Batch Add Peaks API error:', err);
-        notify('error', `Adding peaks failed: ${getApiErrorMessage(err)}`);
-      } finally {
-        setApiPeaksLoading(false);
-      }
-    }
-    
-    // Clear all regions after sending
-    allNewRegionsRef.current = [];
-  }
-  
-  setGlobalAddPeakMode(isAddMode);
-}, [preprocessedData, bandStep, apiPeakParams, buildApiPeakParamsForRequest, notify, mergeApiPeaksResponse]);
-
-// Automatically fetch peaks when preprocessed data changes
 useEffect(() => {
-  if (preprocessedData && Object.keys(preprocessedData).length > 0) {
-    fetchPeaksFromApi();
-  }
-// eslint-disable-next-line react-hooks/exhaustive-deps
-}, [preprocessedData]); // intentionally not including fetchPeaksFromApi to avoid infinite loop
+  integrationJournal.current = { edits: [], clearedTracks: [] };
+  setApiPeaksResponse(null);
+  setApiPeaksLoading(false);
+  setSelectedPeak(null);
+  setAddingPeaks(false);
+  if (preprocessedData) void requestIntegratedPeaks();
+  return () => {
+    peakRequest.current?.abort();
+    peakRequest.current = null;
+  };
+  // Detection settings are applied by the Detect Peaks button.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [preprocessedData]);
 
-console.log("preeeeeeeproceeesssededededed");
+const submitPeakEdit = (
+  channel: ChannelName,
+  operation: EditPeakIntegrationItem["edit_type"],
+  peakX: number,
+  bounds?: PeakBounds,
+) => {
+  const newStart = bounds ? Math.round(bounds.x0) : undefined;
+  const newEnd = bounds ? Math.round(bounds.x1) : undefined;
+  if (newStart !== undefined && newEnd !== undefined && newStart >= newEnd) return;
+  const journal = integrationJournal.current;
+  void requestIntegratedPeaks({
+    ...journal,
+    edits: [...journal.edits, {
+      edit_type: operation, band_key: bandKey, channel_name: channel, peak_x: peakX,
+      new_start: newStart, new_end: newEnd,
+    }],
+  });
+};
 
-console.log(preprocessedData);
+const clearAutomaticPeaks = (scope: "track" | "all") => {
+  const journal = integrationJournal.current;
+  const tracks = scope === "track" ? [bandKey] : Object.keys(preprocessedData ?? {});
+  void requestIntegratedPeaks({
+    ...journal,
+    clearedTracks: Array.from(new Set([...journal.clearedTracks, ...tracks])),
+  });
+};
 
-// ...existing code...
-console.log('preprocessedData',preprocessedData);
-
-const allPeaksOverAllData = useMemo<ReturnType<typeof processAllTracksFromPreprocessed>>(() => {
-  if (!preprocessedData) {
-    return {} as ReturnType<typeof processAllTracksFromPreprocessed>;
-  }
-  return processAllTracksFromPreprocessed(preprocessedData, peakParams);
-}, [preprocessedData, peakParams]);
-
-console.log('allPeaksOverAllData',allPeaksOverAllData);
-
- // Get the image URL for the given bandStep
- const bandKey = String(bandStep); // Ensure it's a string for object key lookup
- const imageUrlBand = bandData?.[bandKey]?.image_url;
-
- console.log('ib',imageUrlBand);
-
-// Get current track's peaks from API response
-const currentTrackApiPeaks = useMemo(() => {
-  return apiChartPeaks[bandKey] ?? { red: [], green: [], blue: [], grayscale: [] };
-}, [apiChartPeaks, bandKey]);
-
-// Memoized series per channel to avoid re-allocating arrays every parent render
-const redData = useMemo(
-  () => (preprocessedData?.[bandKey]?.red ?? []).map((y, x) => ({ x, y })),
-  [preprocessedData, bandKey]
+const hasAutomaticPeaks = Object.values(apiChartPeaks).some(track =>
+  Object.values<ChartPeak[]>(track).some(peaks => peaks.some(peak => peak.source === "automatic")),
 );
-const blueData = useMemo(
-  () => (preprocessedData?.[bandKey]?.blue ?? []).map((y, x) => ({ x, y })),
-  [preprocessedData, bandKey]
-);
-const greenData = useMemo(
-  () => (preprocessedData?.[bandKey]?.green ?? []).map((y, x) => ({ x, y })),
-  [preprocessedData, bandKey]
-);
-const grayData = useMemo(
-  () => (preprocessedData?.[bandKey]?.grayscale ?? []).map((y, x) => ({ x, y })),
-  [preprocessedData, bandKey]
-);
+const channelSeries = useMemo(() => {
+  const trackSignals = preprocessedData?.[bandKey];
+  return trackSignals ? {
+    red: trackSignals.red.map((y, x) => ({ x, y })),
+    green: trackSignals.green.map((y, x) => ({ x, y })),
+    blue: trackSignals.blue.map((y, x) => ({ x, y })),
+    grayscale: trackSignals.grayscale.map((y, x) => ({ x, y })),
+  } : null;
+}, [preprocessedData, bandKey]);
 
-console.log("blue data", blueData);
-
-
-// Flatten and map to table-ready format - API peaks only (fallback disabled)
-const allPeaksForTable = useMemo(() => {
-  // Use API peaks only
-  if (apiPeaksResponse && Object.keys(apiChartPeaks).length > 0) {
-    return Object.entries(apiChartPeaks).flatMap(([trackKey, channels]) =>
-      Object.entries(channels).flatMap(([channel, peaks]) =>
-        (peaks as ChartPeak[]).map((peak) => ({
-          track: parseInt(trackKey) || 0,
-          channels: channel,
-          startHRF: peak.startX,
-          endHRF: peak.endX,
-          hRF: peak.x,
-          height: peak.y.toFixed(4),
-          area: peak.area.toFixed(4),
-          quantity: quantityMetric === 'height' ? peak.y.toFixed(4) : peak.area.toFixed(4)
-        }))
-      )
-    );
-  }
-
-  // No API peaks - return empty array (fallback disabled)
-  return [];
-
-  // COMMENTED OUT: Fallback to client-side calculation - using API only
-  // return Object.entries(allPeaksOverAllData).flatMap(([trackKey, channels]) =>
-  //   Object.entries(channels as Record<string, DataPoint[]>).flatMap(([channel, peaks]) =>
-  //     (peaks as DataPoint[]).map((point, i) => {
-  //       const prevX = (peaks as DataPoint[])[i - 1]?.x ?? point.x;
-  //       const nextX = (peaks as DataPoint[])[i + 1]?.x ?? point.x;
-  //       const bandChannels = ((preprocessedData as unknown) as Record<string, Record<string, number[]>>)?.[trackKey];
-  //       const bandDataArr = bandChannels?.[channel]?.map((y, x) => ({ x, y })) || [];
-  //       const area = computePeakArea(bandDataArr, point.x, areaWindow);
-  //       return {
-  //         track: parseInt(trackKey) || 0,
-  //         channels: channel,
-  //         startHRF: prevX,
-  //         endHRF: nextX,
-  //         hRF: point.x,
-  //         height: point.y.toFixed(4),
-  //         area: area.toFixed(4),
-  //         quantity: quantityMetric === 'height' ? point.y.toFixed(4) : area.toFixed(4)
-  //       };
-  //     })
-  //   )
-  // );
-}, [quantityMetric, apiPeaksResponse, apiChartPeaks]);
-
-// Optional: filter with `filter` input
-const filteredPeaks = useMemo(() => 
-  allPeaksForTable.filter((row) =>
-    Object.values(row).some((value) =>
-      value.toString().toLowerCase().includes(filter.toLowerCase())
-    )
+const allPeaksForTable = Object.entries(apiChartPeaks).flatMap(([track, channels]) =>
+  (Object.keys(channels) as ChannelName[]).flatMap(channel =>
+    channels[channel].map(peak => {
+      const samples = preprocessedData?.[track]?.[channel]?.length ?? 0;
+      return {
+        id: `${track}-${channel}-${peak.x}`,
+        track: Number(track),
+        channels: channel,
+        startHRF: toHrf(peak.startX, samples).toFixed(1),
+        endHRF: toHrf(peak.endX, samples).toFixed(1),
+        hRF: toHrf(peak.x, samples).toFixed(1),
+        height: peak.y.toFixed(4),
+        area: peak.area?.toFixed(4) ?? "-",
+        quantity: (quantityMetric === "height" ? peak.y : peak.area)?.toFixed(4) ?? "-",
+      };
+    }),
   ),
-  [allPeaksForTable, filter]
+);
+const filteredPeaks = allPeaksForTable.filter(({ id, ...row }) =>
+  Object.values(row).some(value => String(value).toLowerCase().includes(filter.toLowerCase())),
 );
 
-console.log('filteredPeaks',
-  allPeaksRef.current
+const matchedPeaks: Record<string, ChartPeak | null> = selectedPeak
+  ? Object.fromEntries(Object.entries(apiChartPeaks).map(([track, channels]) => [
+      track, findClosestPeak(channels[selectedPeak.channel], selectedPeak.peak.x, hRFRangeTolerance),
+    ]))
+  : {};
+const quantityValues: Partial<Record<number, number>> = Object.fromEntries(
+  Object.entries(matchedPeaks).flatMap(([track, peak]) => {
+    const quantity = quantityMetric === "height" ? peak?.y : peak?.area;
+    return quantity === undefined ? [] : [[Number(track) - 1, quantity]];
+  }),
 );
 
+useEffect(() => {
+  calibrationRequest.current++;
+  setCalibrationResult(null);
+  setCalibrationLoading(false);
+}, [apiPeaksResponse, autoPeakValues, hRFRangeTolerance, modelType, quantityMetric, selectedPeak, selectedStandards, tracksToCalibrate]);
 
-
-// ...existing code...
-const resultStandards = useMemo(() => {
-  console.log(selectedPeak, '++++++++++++++++++++++');
-  if (!selectedPeak) return [];
-  const result = isPeakInAllTracks(allPeaksOverAllData, selectedPeak, 100);
-  return Array.isArray(result) ? result : [];
-}, [allPeaksOverAllData, selectedPeak]);
-// ...existing code...
-    
-console.log('resultStandards',resultStandards);
-
- // ...existing code...
-
-
-// Find closest peak from API peaks
-function getClosestApiPeak(
-  peaks: ChartPeak[] | undefined,
-  targetX: number
-): ChartPeak | null {
-  if (!Array.isArray(peaks) || peaks.length === 0 || !Number.isFinite(targetX)) return null;
-  let best = peaks[0];
-  let bestDiff = Math.abs(best.x - targetX);
-  for (let i = 1; i < peaks.length; i++) {
-    const d = Math.abs(peaks[i].x - targetX);
-    if (d < bestDiff) {
-      best = peaks[i];
-      bestDiff = d;
-    }
-  }
-  return best;
-}
-
-function getClosestPeakY(
-  peaks: { x: number; y: number }[] | undefined,
-  targetX: number
-): number {
-  if (!Array.isArray(peaks) || peaks.length === 0 || !Number.isFinite(targetX)) return 0;
-  let best = peaks[0];
-  let bestDiff = Math.abs(best.x - targetX);
-  for (let i = 1; i < peaks.length; i++) {
-    const d = Math.abs(peaks[i].x - targetX);
-    if (d < bestDiff) {
-      best = peaks[i];
-      bestDiff = d;
-    }
-  }
-  return Number.isFinite(best.y) ? best.y : 0;
-}
-
-// Recompute quantity values for each track depending on the metric selection - API only
-const recalcQuantityValues = useCallback(() => {
-  if (!selectedPeak) return;
-  const targetX = selectedPeak.peak?.x;
-  const ch = selectedPeak.channel;
-  console.log(`[recalcQuantityValues] Computing for channel: ${ch}, targetX: ${targetX}, metric: ${quantityMetric}, useApi: ${!!apiPeaksResponse}`);
-  const next: Record<number, number> = {};
-  
-  for (let i = 0; i < totalTracks; i++) {
-    const bandKey = String(i + 1);
-    
-    // Use API peaks only
-    if (apiPeaksResponse && apiChartPeaks[bandKey]) {
-      const apiPeaksForChannel = apiChartPeaks[bandKey][ch as keyof typeof apiChartPeaks[typeof bandKey]];
-      const closestApiPeak = getClosestApiPeak(apiPeaksForChannel, targetX);
-      
-      if (closestApiPeak) {
-        if (quantityMetric === 'height') {
-          next[i] = closestApiPeak.y;
-        } else {
-          // Use region area if manually set, otherwise use API area
-          const regionArea = regionAreasByTrack[i]?.[ch];
-          next[i] = (regionArea !== undefined && regionArea > 0) ? regionArea : closestApiPeak.area;
-        }
-      } else {
-        next[i] = 0; // No matching API peak found
-      }
-    } else {
-      next[i] = 0; // No API data available
-    }
-    
-    // COMMENTED OUT: Fallback to client-side calculation - using API only
-    // if (quantityMetric === 'height') {
-    //   const peaks = (allPeaksOverAllData as any)?.[bandKey]?.[ch] as { x: number; y: number }[] | undefined;
-    //   next[i] = getClosestPeakY(peaks, targetX);
-    // } else {
-    //   const regionArea = regionAreasByTrack[i]?.[ch];
-    //   if (regionArea !== undefined && regionArea > 0) {
-    //     next[i] = regionArea;
-    //   } else {
-    //     const series = (preprocessedData as any)?.[bandKey]?.[ch] as number[] | undefined;
-    //     const bandDataArr = series?.map((y: number, x: number) => ({ x, y })) ?? [];
-    //     next[i] = computePeakArea(bandDataArr, Math.round(targetX), areaWindow);
-    //   }
-    // }
-  }
-  console.log('[recalcQuantityValues] Computed values:', next);
-  setQuantityValues(next);
-}, [selectedPeak, totalTracks, quantityMetric, regionAreasByTrack, apiPeaksResponse, apiChartPeaks]);
-
-
- useEffect(() => {
-  if (!selectedPeak) {
-    console.log('[useEffect] No selectedPeak, skipping recalc');
-    return;
-  }
-  console.log('[useEffect] Recalculating quantity values for selectedPeak:', selectedPeak);
-  recalcQuantityValues();
-}, [selectedPeak, allPeaksOverAllData, preprocessedData, totalTracks, quantityMetric, areaWindow, recalcQuantityValues, regionAreasByTrack]);
-
-// ...existing code...
+const ec50 = calibrationResult?.model_type === "hill"
+  ? calibrationResult.half_max_dose === undefined
+    ? "Unavailable"
+    : `${calibrationResult.half_max_dose.toPrecision(5)}${calibrationResult.half_max_dose_extrapolated ? " (extrapolated)" : ""}`
+  : null;
 
 const handleQuantityChange = (trackIndex: number, value: string) => {
   setAutoPeakValues((prev) => ({
@@ -1687,7 +1011,6 @@ const handleQuantityChange = (trackIndex: number, value: string) => {
     [trackIndex]: parseFloat(value),
     
   }));
-console.log('autoPeakValues', autoPeakValues);
 };
 
 
@@ -1736,143 +1059,6 @@ const togglePreprocessing = (value: PreprocessValue) => {
 
 
 
-const selectedTracks = Object.keys(selectedStandards).filter((key) => selectedStandards[key]);
-console.log('selectedTracks--------',selectedTracks);
-
- // Correct mapping for known_conc and known_peaks
-const known_conc = selectedTracks.map((trackKey) => {
-  // Extract the track index from "band-2" => 2
-  const idx = parseInt(trackKey.replace("band-", ""), 10);
-  return quantityValues[idx];
-});
-
-const known_peaks = selectedTracks
-  .map((trackKey) => {
-    const idx = parseInt(trackKey.replace("band-", ""), 10);
-    const v = quantityValues[idx];
-    return Number.isFinite(v) ? v : null;
-  })
-  .filter((v): v is number => v !== null);
-
-  const allTrackIndices = Array.from({ length: totalTracks }, (_, i) => i);
-  const unknownIndices = allTrackIndices.filter(
-    (i) => !selectedTracks.includes(`band-${i}`) && (tracksToCalibrate[`band-${i}`] ?? true)
-  );
-  
-  // Build aligned pairs and type-narrow to numbers
-  const unknownPairs = unknownIndices
-    .map((i) => {
-      const y = resultStandards.find((s) => s.band === i + 1)?.peak?.y ?? null;
-      return { idx: i, y };
-    })
-    .filter((p): p is { idx: number; y: number } => typeof p.y === "number" && Number.isFinite(p.y));
-  
-  const unknownIndexList = unknownPairs.map((p) => p.idx);
-  const unknown_peaks: number[] = unknownPairs.map((p) => p.y);
-  
-  console.log('unknown_peaks', unknown_peaks);
-  console.log('known_conc', known_conc);
-  console.log('known_peaks', known_peaks);
-  
-// ...existing code...
-// ...existing code...
-// const handleSaveSelectedTracks = async () => {
-//   // Derive selected standard keys fresh
-//   const selectedKeys = Object.keys(selectedStandards).filter((key) => selectedStandards[key]);
-//   if (selectedKeys.length === 0) {
-//     console.warn("No standards selected. Please select at least one standard.");
-//     return;
-//   }
-
-//   // Require an explicitly selected peak; do not fallback
-//   if (!selectedPeak) {
-//     console.warn("No peak selected. Please pick a peak first.");
-//     return;
-//   }
-
-//   console.log("selectedPeak", selectedPeak);
-
-//   // Always use the latest user-selected peak
-//   const matches = isPeakInAllTracks(allPeaksOverAllData, selectedPeak, 100);
-//   console.log("Cross-track matches:", matches);
-
-//   const standards = Array.isArray(matches) ? matches : [];
-//   if (standards.length === 0) {
-//     console.warn("No matching peaks across tracks. Adjust selection or parameters.");
-//     return;
-//   }
-
-//   const getIdx = (key: string) => parseInt(key.replace("band-", ""), 10);
-
-//   // known concentrations for selected standards
-//   const known_conc_local = selectedKeys
-//   .map((k) => autoPeakValues[getIdx(k)])
-//   .filter((v): v is number => Number.isFinite(v));
-
-//   // known peak heights for selected standards (map by band)
-//   const known_peaks_local = selectedKeys
-//   .map((k) => quantityValues[getIdx(k)])
-//   .filter((v): v is number => Number.isFinite(v));
-
-//   // unknown peaks = remaining tracks
-//   const allIdx = Array.from({ length: totalTracks }, (_, i) => i);
-//   const unknownIdx = allIdx.filter((i) => !selectedKeys.includes(`band-${i}`));
-//   const unknown_peaks_local = unknownIdx
-//     .map((i) => quantityValues[i])
-//     .filter((v): v is number => Number.isFinite(v));
-
-//   if (known_conc_local.length === 0 || known_peaks_local.length === 0) {
-//     console.warn("Known concentrations or peaks are empty. Set quantities and select valid standards.");
-//     return;
-//   }
-
-//   const model_type = "hill";
-//   const payload = {
-//     known_conc: known_conc_local,
-//     known_peaks: known_peaks_local,
-//     unknown_peaks: unknown_peaks_local,
-//     model_type,
-//   };
-
-//   try {
-//     const { data } = await axios.post(
-//       "http://127.0.0.1:8000/api/calibrate/",
-//       payload,
-//       {
-//         headers: { "Content-Type": "application/json" },
-//         timeout: 15000,
-//       }
-//     );
-//     setCalibrationResult(data);
-//     console.log("API response:", data);
-//   } catch (error) {
-//     console.error("API error:", error);
-//   }
-// };
-// ...existing code...
-
-const handlePlotClick = () => {
-    console.log(peakRef.current);
-    setStandardData(peakRef.current);
-    setShowCurve(true);
-  };
-
-
-
-const handleFinishEdit = () => {
-  // Send all temp data to Redux
-  // Object.entries(tempPeaks).forEach(([channel, peaks]) => {
-  //   dispatch({ type: "PEAKS_BY_CHANNEL", payload: { channel, peaks } });
-  // });
-  // Object.entries(tempRegions).forEach(([channel, regions]) => {
-  //   dispatch({ type: "REGIONS_BY_CHANNEL", payload: { channel, regions } });
-  // });
-  // Object.entries(tempSelectedPeak).forEach(([channel, peak]) => {
-  //   dispatch({ type: "SELECTED_PEAK_BY_CHANNEL", payload: { channel, peak } });
-  // });
-  console.log("handlefinishedit");
-  
-};
 const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = event.target;
     // Keep raw input (including empty string) so typing/backspacing feels natural.
@@ -2104,11 +1290,7 @@ const handleDownloadReport = async () => {
     }
 
     // X ticks: prefer 0 / mid / max, but avoid overlapping labels on narrow charts
-    const xTickCandidates = [
-      { i: 0, label: '0' },
-      { i: Math.floor((n - 1) / 2), label: String(Math.floor((n - 1) / 2)) },
-      { i: n - 1, label: String(n - 1) },
-    ]
+    const xTickCandidates = [0, 50, 100].map(hrf => ({ i: hrf * (n - 1) / 100, label: String(hrf) }))
       .filter((t, idx, arr) => arr.findIndex((u) => u.i === t.i) === idx)
       .sort((a, b) => a.i - b.i);
 
@@ -2471,6 +1653,11 @@ const handleDownloadReport = async () => {
   );
   y += 8;
   
+  if (ec50) {
+    doc.text(`EC50 (half-maximal dose): ${ec50}`, margin, y);
+    y += 8;
+  }
+
   if (calibrationResult?.predictions?.equation) {
     doc.setFontSize(11);
     doc.setFont("helvetica", "bold");
@@ -2487,20 +1674,8 @@ const handleDownloadReport = async () => {
   addSectionHeader("Step 5: Predicted Amount (Unknowns)");
   
   if (Array.isArray(calibrationResult?.predictions?.concentrations)) {
-    // Unknowns are the tracks that are NOT selected as standards.
-    // Keep ordering consistent with how unknowns are built for calibration (ascending track index).
-    const selectedKeysForReport = Object.keys(selectedStandards).filter((k) => selectedStandards[k]);
-    const standardTrackIndicesForReport = selectedKeysForReport
-      .map((k) => Number.parseInt(k.replace("band-", ""), 10))
-      .filter((n) => Number.isFinite(n));
-    const unknownTrackIndicesForReport = Array.from({ length: totalTracks }, (_, i) => i).filter(
-      (i) => !standardTrackIndicesForReport.includes(i) && (tracksToCalibrate[`band-${i}`] ?? true)
-    );
-
     const resultRows = calibrationResult.predictions.concentrations.map((conc, idx) => {
-      const trackIndex = unknownTrackIndicesForReport[idx];
-      const baseIdx = Number.isFinite(trackIndex) ? (trackIndex as number) : idx;
-      const trackNo = baseIdx + 1;
+      const trackNo = calibrationResult.unknownTracks[idx] + 1;
 
       const concNum = Number(conc);
       const concText = Number.isFinite(concNum) ? concNum.toFixed(4) : '-';
@@ -2522,342 +1697,61 @@ const handleDownloadReport = async () => {
   doc.save(`TLC_Report_${new Date().getTime()}.pdf`);
 };
 
-function getFirstPeakFromRef(
-  ref: { [channel: string]: any },
-  band: number
-): { channel: ChannelName; band: number; peak: DataPoint } | null {
-  const channels: ChannelName[] = ["red", "green", "blue", "grayscale"];
-  for (const ch of channels) {
-    const entry = ref[ch];
-    let p: DataPoint | undefined;
-
-    // Case 1: simple array of peaks
-    if (Array.isArray(entry)) {
-      p = entry[0];
-    }
-    // Case 2: peaks grouped per band: ref[channel][band] -> DataPoint[]
-    else if (entry && typeof entry === "object") {
-      const byBand = entry as Record<number | string, DataPoint[]>;
-      const arr = byBand[band] || byBand[String(band)];
-      if (Array.isArray(arr)) p = arr[0];
-    }
-
-    if (p) return { channel: ch, band, peak: p };
-  }
-  return null;
-}
-// ...existing code...
-const handleGetSelectedPeak = () => {
-  const picked = peakRef.current;
-  if (!picked) {
-    console.warn("No peaks found in peakRef for current band.");
-    notify('warning', 'No peaks found in the current band.');
+const handleGetSelectedPeak = async () => {
+  if (modelType === "none" || !selectedPeak) {
+    notify("warning", "Select a calibration model and a peak first.");
     return;
   }
 
-  if (modelType === 'none') {
-    notify('error', 'Please select a calibration model before calibrating.');
-    return;
-  }
-  console.log("handleGetSelectedPeak", picked);
-
-  const prev = prevSelectedPeakRef.current || {};
-  const curr = picked as Record<string, any[]>;
-
-  const prevChannels = new Set(Object.keys(prev));
-  const currChannels = new Set(Object.keys(curr));
-
-  let updatedChannel: string | null = null;
-
-  // Log new/updated channels
-  Array.from(currChannels).forEach((ch) => {
-    const was = prev[ch];
-    const now = curr[ch];
-
-    if (!(ch in prev)) {
-      console.log(`[selectedPeak] NEW channel "${ch}" ->`, now);
-      updatedChannel = ch;
-    } else if (!isSamePeakArray(was, now)) {
-      console.log(`[selectedPeak] UPDATED channel "${ch}"`, { before: was, after: now });
-      updatedChannel = ch;
-    }
-  });
-
-  // Log cleared/removed channels
-  Array.from(prevChannels).forEach((ch) => {
-    if (!currChannels.has(ch)) {
-      console.log(`[selectedPeak] CLEARED channel "${ch}" (was ->)`, prev[ch]);
-    }
-  });
-
-  // Decide the peak to use even if there is no change
-  let chosen: { channel: ChannelName; band: number; peak: DataPoint } | null = null;
-
-  if (updatedChannel) {
-    const peakArr = curr[updatedChannel] || [];
-    const peak = peakArr[0] ?? null;
-    if (peak) {
-      chosen = { channel: updatedChannel as ChannelName, band: bandStep, peak };
-      setSelectedPeak(chosen);
-      console.log("Selected peak set (updated):", chosen);
-    }
-  } else {
-    console.log("[selectedPeak] No changes detected. Using last known selection/fallback.");
-    // Prefer the already selected peak, else fallback to first available from ref
-    if (selectedPeak) {
-      chosen = selectedPeak;
-    } else {
-      const fallback = getFirstPeakFromRef(peakRef.current, bandStep);
-      if (fallback) {
-        chosen = fallback;
-        setSelectedPeak(fallback);
-        console.log("Selected peak set (fallback):", fallback);
-      }
-    }
-  }
-
-  if (!chosen) {
-    console.warn("No usable peak to calibrate.");
-    notify('warning', 'No usable peak to calibrate.');
-    prevSelectedPeakRef.current = clone(curr);
+  const enabledTracks = Array.from({ length: totalTracks }, (_, index) => index)
+    .filter(index => tracksToCalibrate[`band-${index}`] ?? true);
+  const standards = enabledTracks.filter(index => selectedStandards[`band-${index}`]);
+  if (!standards.length) {
+    notify("warning", "Select at least one enabled calibration standard.");
     return;
   }
 
-  const selectedKeys = Object.keys(selectedStandards).filter((k) => selectedStandards[k]);
-  if (selectedKeys.length === 0) {
-    console.warn("No standards selected. Please select at least one standard.");
-    notify('warning', 'No standards selected. Please select at least one standard.');
-  } else {
-    const isTrackEnabled = (trackIndex: number) => tracksToCalibrate[`band-${trackIndex}`] ?? true;
+  const amounts = standards.map(index => autoPeakValues[index]);
+  const values = standards.map(index => quantityValues[index]);
+  if (!amounts.every(Number.isFinite) || !values.every(Number.isFinite)) {
+    notify("warning", "Enter an amount and integrate a matching peak for each selected standard.");
+    return;
+  }
 
-    // Get the selected standard track indices (0-based)
-    const standardKeysEnabled = selectedKeys.filter((k) => {
-      const idx = Number.parseInt(k.replace("band-", ""), 10);
-      return Number.isFinite(idx) && isTrackEnabled(idx);
-    });
-
-    const standardTrackIndices = standardKeysEnabled
-      .map((k) => Number.parseInt(k.replace("band-", ""), 10))
-      .filter((n) => Number.isFinite(n));
-
-    if (standardTrackIndices.length === 0) {
-      console.warn("No enabled standards selected for calibration.");
-      notify('warning', 'No enabled standards selected for calibration. Check “To calibrate?”.');
-      prevSelectedPeakRef.current = clone(curr);
-      return;
-    }
-
-    /**
-     * Check if the selected peak is present within threshold in all selected standard tracks.
-     * Only checks the same channel as the selected peak.
-     * @param selectedPeak - The peak selected by the user (channel, band, peak)
-     * @param standardIndices - Array of 0-based track indices for selected standards
-     * @param threshold - The hRF tolerance for matching peaks
-     * @returns Array of matched peaks or false if any standard track is missing the peak
-     */
-    const isPeakInSelectedStandards = (
-      selectedPeak: { channel: ChannelName; band: number; peak: DataPoint },
-      standardIndices: number[],
-      threshold: number
-    ): { channel: ChannelName; band: number; peak: DataPoint; area?: number }[] | false => {
-      const { channel, peak } = selectedPeak;
-      const targetX = peak?.x;
-
-      console.log('[isPeakInSelectedStandards] Checking peak:', { channel, targetX, threshold, standardIndices });
-
-      if (!Number.isFinite(targetX) || !Number.isFinite(threshold) || threshold < 0) {
-        console.warn('[isPeakInSelectedStandards] Invalid targetX or threshold', { targetX, threshold });
-        return false;
-      }
-
-      const matchedPeaks: { channel: ChannelName; band: number; peak: DataPoint; area?: number }[] = [];
-
-      for (const trackIndex of standardIndices) {
-        // apiPeaksResponse uses 1-based keys as strings
-        const trackKey = String(trackIndex + 1);
-        const trackData = apiPeaksResponse?.[trackKey];
-
-        if (!trackData) {
-          console.warn('[isPeakInSelectedStandards] No API peaks data for track', { trackIndex, trackKey });
-          return false;
-        }
-
-        // Get the channel peaks object from apiPeaksResponse
-        // Structure: { "50": { peak_height, peak_x, start_end, area }, "56": {...}, ... }
-        const channelPeaks = trackData[channel];
-
-        if (!channelPeaks || typeof channelPeaks !== 'object' || Object.keys(channelPeaks).length === 0) {
-          console.warn('[isPeakInSelectedStandards] No peaks in channel for track', { trackIndex, channel });
-          return false;
-        }
-
-        // Find the peak within threshold of targetX
-        // Keys are peak_x positions as strings
-        const peakEntries = Object.entries(channelPeaks);
-        let matchedPeak: { x: number; y: number; area?: number } | null = null;
-        let minDiff = Infinity;
-
-        for (const [peakXStr, peakData] of peakEntries) {
-          const peakX = Number(peakXStr);
-          const diff = Math.abs(peakX - targetX);
-          
-          if (diff <= threshold && diff < minDiff) {
-            minDiff = diff;
-            matchedPeak = {
-              x: (peakData as any).peak_x ?? peakX,
-              y: (peakData as any).peak_height ?? 0,
-              area: (peakData as any).area
-            };
-          }
-        }
-
-        if (!matchedPeak) {
-          const allPeakXs = peakEntries.map(([xStr]) => Number(xStr));
-          const closestDiff = Math.min(...allPeakXs.map(x => Math.abs(x - targetX)));
-          console.warn('[isPeakInSelectedStandards] No peak within threshold', {
-            trackIndex,
-            channel,
-            targetX,
-            threshold,
-            closestDiff,
-            availablePeaks: allPeakXs
-          });
-          return false;
-        }
-
-        matchedPeaks.push({ 
-          channel, 
-          band: trackIndex, 
-          peak: { x: matchedPeak.x, y: matchedPeak.y },
-          area: matchedPeak.area
-        });
-      }
-
-      console.log('[isPeakInSelectedStandards] All standards matched:', matchedPeaks);
-      return matchedPeaks;
-    };
-
-    const matches = isPeakInSelectedStandards(chosen, standardTrackIndices, hRFRangeTolerance);
-    if (!Array.isArray(matches) || matches.length === 0) {
-      console.warn("No matching peaks across selected standard tracks. Adjust selection or parameters.");
-      notify('warning', 'No matching peaks across selected standard tracks.');
-    } else {
-      const getIdx = (k: string) => parseInt(k.replace("band-", ""), 10);
-
-      // Known concentrations + peaks must stay aligned (same ordering/length).
-      // Use only standards that are enabled for calibration.
-      const knownPairs = standardKeysEnabled
-        .map((k) => {
-          const idx = getIdx(k);
-          return {
-            conc: autoPeakValues[idx],
-            peak: quantityValues[idx],
-          };
-        })
-        .filter(
-          (p): p is { conc: number; peak: number } =>
-            Number.isFinite(p.conc) && Number.isFinite(p.peak)
-        );
-
-      const known_conc_local = knownPairs.map((p) => p.conc);
-      const known_peaks_local = knownPairs.map((p) => p.peak);
-
-      const allIdx = Array.from({ length: totalTracks }, (_, i) => i);
-      // Unknowns are non-standards that are enabled for calibration.
-      const unknownIdx = allIdx.filter(
-        (i) => !selectedStandards[`band-${i}`] && isTrackEnabled(i)
-      );
-
-      // Unknown peaks: use quantityValues (area or height based on metric) for non-standard tracks
-      const unknown_peaks_local = unknownIdx
-        .map((i) => quantityValues[i])
-        .filter((v): v is number => Number.isFinite(v));
-
-      console.log('=== CALIBRATION DATA ===');
-      console.log('Selected Standards Keys:', selectedKeys);
-      console.log('autoPeakValues (user-entered concentrations):', autoPeakValues);
-      console.log('quantityValues (peak metric - height or area):', quantityValues);
-      console.log('Current quantityMetric:', quantityMetric);
-
-      const payload = {
-        known_conc: known_conc_local,
-        known_peaks: known_peaks_local,
-        unknown_peaks: unknown_peaks_local,
+  const unknownTracks = enabledTracks.filter(index =>
+    !selectedStandards[`band-${index}`] && Number.isFinite(quantityValues[index]),
+  );
+  const request = ++calibrationRequest.current;
+  setCalibrationResult(null);
+  setCalibrationLoading(true);
+  try {
+    const { data: result } = await axios.post<Omit<CalibrationResult, "unknownTracks">>(
+      apiUrl("/calibrate/"),
+      {
+        known_conc: amounts,
+        known_peaks: values,
+        unknown_peaks: unknownTracks.map(index => quantityValues[index]),
         model_type: modelType,
-      };
-
-      // Log calibration data for debugging
-      console.log('Calibration Payload:', {
-        quantityMetric,
-        known_conc: known_conc_local,
-        known_peaks: known_peaks_local,
-        unknown_peaks: unknown_peaks_local,
-        model_type: modelType
-      });
-
-      // Always hit the API, even if arrays are empty (backend should validate)
-      (async () => {
-        setCalibrationLoading(true);
-        try {
-          const response = await axios.post(
-            apiUrl("/calibrate/"),
-            payload,
-            { headers: { "Content-Type": "application/json" }, timeout: 15000 }
-          );
-
-          if (response.status !== 200) {
-            throw new Error(formatNon200AxiosResponse({
-              status: response.status,
-              statusText: response.statusText,
-              data: response.data,
-            }));
-          }
-
-          setCalibrationResult(response.data);
-          console.log("Calibrate API response:", response.data);
-          notify('success', 'Calibration completed.');
-        } catch (err: unknown) {
-          console.error("Calibrate API error:", err);
-          notify('error', `Calibration failed: ${getApiErrorMessage(err)}`);
-        } finally {
-          setCalibrationLoading(false);
-        }
-      })();
+      },
+      { timeout: 15000 },
+    );
+    if (request === calibrationRequest.current) {
+      const matchedTracks = result.predictions?.input_indices?.map(index => unknownTracks[index]) ?? unknownTracks;
+      setCalibrationResult({ ...result, unknownTracks: matchedTracks });
+      notify("success", "Calibration completed.");
     }
+  } catch (error) {
+    if (request === calibrationRequest.current) {
+      notify("error", `Calibration failed: ${getApiErrorMessage(error)}`);
+    }
+  } finally {
+    if (request === calibrationRequest.current) setCalibrationLoading(false);
   }
-
-
-  // Save snapshot
-  prevSelectedPeakRef.current = clone(curr);
 };
-// ...existing code...
-
-console.log('calibrationResult',calibrationResult); 
-
 
 const openSelectStandardModal = () => {
-  if (!preprocessedData) {
-    notify('warning', 'Preprocessed data not available.');
-    return;
-  }
-
-  // Prefer existing selectedPeak; otherwise infer one from peakRef for the current band
-  let chosen = selectedPeak ?? getFirstPeakFromRef(peakRef.current, bandStep);
-
-  if (!chosen) {
-    notify('warning', 'Pick a peak on any chart first.');
-    (document.getElementById("select_standard_modal") as HTMLDialogElement | null)?.showModal();
-    return;
-  }
-
-  // Persist the chosen peak so the header and other UI can use it
-  setSelectedPeak(chosen);
-
-  // Populate quantityValues from detected peaks (closest by x in selected channel)
-  // Recalculate quantities using current metric selection
-  recalcQuantityValues();
-
-  (document.getElementById("select_standard_modal") as HTMLDialogElement | null)?.showModal();
+  if (!selectedPeak) notify("warning", "Pick a peak on a chart to match it across tracks.");
+  (document.getElementById("select_standard_modal") as HTMLDialogElement)?.showModal();
 };
 
     return (
@@ -2911,62 +1805,9 @@ const openSelectStandardModal = () => {
     <div className="w-full max-w-2xl">
         <h2 className="text-xl font-semibold mb-4">Step 1: Preprocessing</h2>
 
-        {/* Display Image with Arrows */}
-       {markedImg && (
-        <>
-    <div className="mt-4 flex items-center justify-center gap-4">
+        <QuantTLCImages plate={markedImg} track={imgSrc} trackNumber={bandStep}
+          totalTracks={totalTracks} onTrackChange={setBandStep} />
 
-        {/* Image */}
-        <img
-            src={markedImg}
-            alt="quanTLC Image"
-            className="w-full h-[200px] max-w-2xl rounded-lg shadow-lg"
-            />
-    </div>
-
-     {/* Number of Tracks Input */}
-       <div className="mt-4 flex flex-col items-center justify-center gap-2">
-  {/* Step Number */}
-  <p className="text-sm text-gray-600">
-    Track {bandStep} of {totalTracks}
-  </p>
-
-  {/* Navigation and Image */}
-  <div className="flex items-center justify-center gap-4">
-    {/* Left Arrow */}
-    <button
-      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
-      onClick={() => {
-        if (bandStep > 1) setBandStep(bandStep - 1);
-      }}
-      disabled={bandStep <= 1}
-    >
-      <ArrowLeftIcon className="h-6 w-6 text-gray-600" />
-    </button>
-
-    {/* Image */}
-    {data && (
-      <img
-      src={imgSrc}
-        alt="quanTLC band Image"
-        className="w-full max-w-lg rounded-lg shadow-lg"
-      />
-    )}
-
-    {/* Right Arrow */}
-    <button
-      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
-      onClick={() => {
-        if (bandStep < totalTracks) setBandStep(bandStep + 1);
-      }}
-      disabled={bandStep >= totalTracks}
-    >
-      <ArrowRightIcon className="h-6 w-6 text-gray-600" />
-    </button>
-  </div>
-</div>
-              </>
-            )}
 {/* Compact Form Section */}
 <form className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 text-sm w-full max-w-5xl" onSubmit={handleQuantTLC}>
   {(
@@ -3325,7 +2166,7 @@ const openSelectStandardModal = () => {
       <form method="dialog">
         <button className="btn btn-outline">Cancel</button>
       </form>
-      <button className="btn btn-primary" onClick={handleSaveAdvancedOptions}>
+      <button className="btn btn-primary" onClick={handlePreProcess}>
         Apply
       </button>
     </div>
@@ -3369,7 +2210,7 @@ const openSelectStandardModal = () => {
 
             {/* Densitogram Graph */}
             {preprocessedData && step === 1 && !preprocessLoading && (
-                <DensitogramGraph bandStep={bandKey} preprocessing={selectedPreprocessing} onProcessedData={handleProcessedData} densitogram={preprocessedData}/>
+                <DensitogramGraph bandStep={bandKey} preprocessing={selectedPreprocessing} useHrfScale densitogram={preprocessedData}/>
 
             )}
 
@@ -3395,7 +2236,7 @@ const openSelectStandardModal = () => {
               </div>
               <button 
                 className={`btn btn-primary btn-sm ${apiPeaksLoading ? 'loading' : ''}`}
-                onClick={fetchPeaksFromApi}
+                onClick={() => void requestIntegratedPeaks()}
                 disabled={apiPeaksLoading || !preprocessedData}
               >
                 {apiPeaksLoading ? 'Detecting...' : 'Detect Peaks'}
@@ -3638,7 +2479,7 @@ const openSelectStandardModal = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <div className="flex items-center gap-2 mb-1">
-                      <label className="block text-sm font-medium text-gray-700">hRF Range</label>
+                      <label className="block text-sm font-medium text-gray-700">Peak matching tolerance (samples)</label>
                       <InfoTip
                         tip={
                           'This value is the hRF matching threshold (tolerance) used when selecting/validating the same peak across tracks. Increase it to match peaks that shift more; decrease it for stricter matching.'
@@ -3650,7 +2491,7 @@ const openSelectStandardModal = () => {
                         type="number"
                         className="w-full border rounded p-2"
                         value={hRFRangeTolerance}
-                        onChange={(e) => setHRFRangeTolerance(parseInt(e.target.value))}
+                        onChange={(e) => setHRFRangeTolerance(Math.max(0, Number(e.target.value)))}
                         min={1}
                     />
                 </div>
@@ -3661,47 +2502,8 @@ const openSelectStandardModal = () => {
 
          <h2 className="text-xl font-semibold text-center mb-6">Integration & Stats</h2>
 
-        {/* Number of Tracks Input */}
-       <div className="mt-4 flex flex-col items-center justify-center gap-2">
-  {/* Step Number */}
-  <p className="text-sm text-gray-600">
-    Track {bandStep} of {totalTracks}
-  </p>
-
-  {/* Navigation and Image */}
-  <div className="flex items-center justify-center gap-4">
-    {/* Left Arrow */}
-    <button
-      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
-      onClick={() => {
-        if (bandStep > 1) setBandStep(bandStep - 1);
-      }}
-      disabled={bandStep <= 1}
-    >
-      <ArrowLeftIcon className="h-6 w-6 text-gray-600" />
-    </button>
-
-    {/* Image */}
-    {data && (
-      <img
-        src={imgSrc}
-        alt="quanTLC Image"
-        className="w-full max-w-lg rounded-lg shadow-lg"
-      />
-    )}
-
-    {/* Right Arrow */}
-    <button
-      className="p-2 bg-white rounded-full shadow hover:bg-gray-100"
-      onClick={() => {
-        if (bandStep < totalTracks) setBandStep(bandStep + 1);
-      }}
-      disabled={bandStep >= totalTracks}
-    >
-      <ArrowRightIcon className="h-6 w-6 text-gray-600" />
-    </button>
-  </div>
-</div>
+        <QuantTLCImages plate={markedImg} track={imgSrc} trackNumber={bandStep}
+          totalTracks={totalTracks} onTrackChange={setBandStep} />
 
         {/* Buttons for Automatic Integration & Peak List */}
         <div className="flex justify-center space-x-4 mb-6 mt-6">
@@ -3770,8 +2572,7 @@ const openSelectStandardModal = () => {
               type="number"
               step="0.01"
               className="input input-bordered input-sm w-24"
-              value={autoPeakValues[rowIndex] ?? ""}
-              defaultValue={0}
+              value={Number.isFinite(autoPeakValues[rowIndex]) ? autoPeakValues[rowIndex] : ""}
               onChange={(e) => handleQuantityChange(rowIndex, e.target.value)}
             />
           </td>
@@ -3779,52 +2580,13 @@ const openSelectStandardModal = () => {
           {/* Peak Height Column */}
           {selectedPeak?.channel && (
             <>
-              <td>
-                {(() => {
-                  const ch = selectedPeak.channel;
-                  const bandKey = String(rowIndex + 1);
-                  
-                  // Prefer API peaks
-                  if (apiPeaksResponse && apiChartPeaks[bandKey]) {
-                    const apiPeaksForChannel = apiChartPeaks[bandKey][ch as keyof typeof apiChartPeaks[typeof bandKey]];
-                    const closestApiPeak = getClosestApiPeak(apiPeaksForChannel, selectedPeak.peak?.x);
-                    if (closestApiPeak) return closestApiPeak.y.toFixed(4);
-                  }
-                  
-                  // Fallback to client-side
-                  const peaks = (allPeaksOverAllData as any)?.[bandKey]?.[ch] as { x: number; y: number }[] | undefined;
-                  const peakHeight = getClosestPeakY(peaks, selectedPeak.peak?.x);
-                  return Number.isFinite(peakHeight) ? peakHeight.toFixed(4) : "-";
-                })()}
-              </td>
-              
-              {/* Region Area Column */}
-              <td>
-                {(() => {
-                  const ch = selectedPeak.channel;
-                  const bandKey = String(rowIndex + 1);
-                  
-                  // First check manual region area
-                  const regionArea = regionAreasByTrack[rowIndex]?.[ch];
-                  if (regionArea !== undefined && regionArea > 0) {
-                    return regionArea.toFixed(4);
-                  }
-                  
-                  // Then try API peak area
-                  if (apiPeaksResponse && apiChartPeaks[bandKey]) {
-                    const apiPeaksForChannel = apiChartPeaks[bandKey][ch as keyof typeof apiChartPeaks[typeof bandKey]];
-                    const closestApiPeak = getClosestApiPeak(apiPeaksForChannel, selectedPeak.peak?.x);
-                    if (closestApiPeak) return closestApiPeak.area.toFixed(4);
-                  }
-                  
-                  return "-";
-                })()}
-              </td>
-              
+              <td>{matchedPeaks[rowIndex + 1]?.y.toFixed(4) ?? "-"}</td>
+              <td>{matchedPeaks[rowIndex + 1]?.area?.toFixed(4) ?? "-"}</td>
+
               {/* Quantity Value Column (what will be used for calibration) */}
               <td className="font-semibold bg-base-200">
                 {Number.isFinite(quantityValues[rowIndex])
-                  ? quantityValues[rowIndex].toFixed(4)
+                  ? quantityValues[rowIndex]?.toFixed(4)
                   : "-"}
               </td>
             </>
@@ -3891,10 +2653,10 @@ const openSelectStandardModal = () => {
       </tr>
     </thead>
     <tbody>
-      {filteredPeaks.map((row, index) => (
+      {filteredPeaks.map(row => (
 
         
-        <tr key={index}>
+        <tr key={row.id}>
           <td>{row.track}</td>
           <td className="capitalize">{row.channels}</td>
           <td>{row.startHRF}</td>
@@ -3922,19 +2684,23 @@ const openSelectStandardModal = () => {
         </div>
 
 
-        {/* Densitogram Graphs */}
-         <div>
-      {/* Toggle Button for Select Peak */}
-      {/* <div className="flex items-center mb-4">
-            <label className="mr-2 text-lg font-medium">Select Peak</label>
-            <input
-                type="checkbox"
-                className="toggle"
-                checked={selectPeakEnabled}
-                onChange={() => setSelectPeakEnabled(!selectPeakEnabled)}
-            />
-        </div> */}
-
+        <div>
+          <button type="button" className="btn btn-outline mb-4"
+            disabled={apiPeaksLoading || !hasAutomaticPeaks}
+            onClick={() => (document.getElementById("delete-automatic-peaks") as HTMLDialogElement)?.showModal()}>
+            Delete all automatic peaks
+          </button>
+          <dialog id="delete-automatic-peaks" className="modal">
+            <form method="dialog" className="modal-box">
+              <h3 className="text-lg font-semibold">Delete all automatic peaks</h3>
+              <p>Choose which tracks to clear. Manually integrated peaks will be kept.</p>
+              <div className="modal-action flex-wrap">
+                <button className="btn">Cancel</button>
+                <button className="btn btn-outline" onClick={() => clearAutomaticPeaks("track")}>Current track</button>
+                <button className="btn btn-error" onClick={() => clearAutomaticPeaks("all")}>All tracks</button>
+              </div>
+            </form>
+          </dialog>
       {/* Channel Multi-Select */}
       <div className="mb-4 flex flex-wrap gap-4 items-center">
         <span className="font-medium mr-2">Select Channels:</span>
@@ -3960,117 +2726,27 @@ const openSelectStandardModal = () => {
             <p className="mt-2 text-gray-600 font-medium">Processing peaks...</p>
           </div>
         )}
-        {selectedChannels.includes("red") && (
-          <div className="w-full">
+        {channelSeries && selectedChannels.map(value => {
+          const channel = value as ChannelName;
+          return (
             <D3InteractiveChart
-              data={redData}
-              lineColor="red"
-              fillColor="rgba(255, 0, 0, 0.3)"
-              selectedPeakRef={peakRef}
-              channelName="red"
-              bandstep={bandStep}
-              ref={chartRef}
-              peakParams={peakParams}
-              allPeaks={allPeaksRef.current}
-              onRegionsChange={handleRegionsChange}
-              onPeakAreaChange={handlePeakAreaChange}
-              onEditPeakIntegration={handleEditPeakIntegration}
-              onBatchAddPeaks={handleBatchAddPeaks}
-              onNewRegionAdded={handleNewRegionAdded}
-              addPeakModeExternal={globalAddPeakMode}
-              onAddPeakModeToggle={handleAddPeakModeToggle}
-              onPeakSelect={handlePeakSelect}
-              apiPeaks={currentTrackApiPeaks.red}
-              useApiPeaks={!!apiPeaksResponse}
+              key={`${bandKey}-${channel}`}
+              channelName={channel}
+              lineColor={channel === "grayscale" ? "gray" : channel}
+              data={channelSeries[channel]}
+              peaks={getChannelPeaks(apiChartPeaks, bandKey, channel)}
+              selectedX={selectedPeak?.band === bandStep && selectedPeak.channel === channel
+                ? selectedPeak.peak.x : undefined}
+              adding={addingPeaks}
+              onToggleAdding={() => setAddingPeaks(adding => !adding)}
+              onSelect={peak => setSelectedPeak({ band: bandStep, channel, peak })}
+              onAdd={bounds => submitPeakEdit(channel, "add", 0, bounds)}
+              onResize={(peakX, bounds) => submitPeakEdit(channel, "update", peakX, bounds)}
+              onDelete={peakX => submitPeakEdit(channel, "delete", peakX)}
             />
-          </div>
-        )}
-        {selectedChannels.includes("blue") && (
-          <div className="w-full">
-            <D3InteractiveChart
-              data={blueData}
-              lineColor="blue"
-              fillColor="rgba(0, 0, 255, 0.4)"
-              selectedPeakRef={peakRef}
-              channelName="blue"
-              bandstep={bandStep}
-              ref={chartRef}
-              peakParams={peakParams}
-              allPeaks={allPeaksRef.current}
-              onRegionsChange={handleRegionsChange}
-              onPeakAreaChange={handlePeakAreaChange}
-              onEditPeakIntegration={handleEditPeakIntegration}
-              onBatchAddPeaks={handleBatchAddPeaks}
-              onNewRegionAdded={handleNewRegionAdded}
-              addPeakModeExternal={globalAddPeakMode}
-              onAddPeakModeToggle={handleAddPeakModeToggle}
-              onPeakSelect={handlePeakSelect}
-              apiPeaks={currentTrackApiPeaks.blue}
-              useApiPeaks={!!apiPeaksResponse}
-            />
-          </div>
-        )}
-        {selectedChannels.includes("green") && (
-          <div className="w-full">
-            <D3InteractiveChart
-              data={greenData}
-              lineColor="green"
-              fillColor="rgba(0, 255, 0, 0.3)"
-              selectedPeakRef={peakRef}
-              channelName="green"
-              bandstep={bandStep}
-              ref={chartRef}
-              peakParams={peakParams}
-              allPeaks={allPeaksRef.current}
-              onRegionsChange={handleRegionsChange}
-              onPeakAreaChange={handlePeakAreaChange}
-              onPeakSelect={handlePeakSelect}
-              onEditPeakIntegration={handleEditPeakIntegration}
-              onBatchAddPeaks={handleBatchAddPeaks}
-              onNewRegionAdded={handleNewRegionAdded}
-              addPeakModeExternal={globalAddPeakMode}
-              onAddPeakModeToggle={handleAddPeakModeToggle}
-              apiPeaks={currentTrackApiPeaks.green}
-              useApiPeaks={!!apiPeaksResponse}
-            />
-          </div>
-        )}
-        {selectedChannels.includes("grayscale") && (
-          <div className="w-full">
-            <D3InteractiveChart
-              data={grayData}
-              lineColor="gray"
-              fillColor="rgba(128, 0, 128, 0.3)"
-              selectedPeakRef={peakRef}
-              channelName="grayscale"
-              bandstep={bandStep}
-              ref={chartRef}
-              peakParams={peakParams}
-              allPeaks={allPeaksRef.current}
-              onRegionsChange={handleRegionsChange}
-              onPeakAreaChange={handlePeakAreaChange}
-              onPeakSelect={handlePeakSelect}
-              onEditPeakIntegration={handleEditPeakIntegration}
-              onBatchAddPeaks={handleBatchAddPeaks}
-              onNewRegionAdded={handleNewRegionAdded}
-              addPeakModeExternal={globalAddPeakMode}
-              onAddPeakModeToggle={handleAddPeakModeToggle}
-              apiPeaks={currentTrackApiPeaks.grayscale}
-              useApiPeaks={!!apiPeaksResponse}
-            />
-          </div>
-        )}
+          );
+        })}
       </div>
-      {/* Finish Edit Button
-      <div className="flex justify-end mt-4">
-        <button
-          className="btn btn-primary"
-          onClick={handleFinishEdit}
-          disabled={!selectPeakEnabled}
-        >
-          Finish Edit
-        </button>
-      </div> */}
     </div>
     <div className="w-full mb-4">
   {/* Controls */}
@@ -4108,7 +2784,7 @@ const openSelectStandardModal = () => {
       <option value="height">Peak Height</option>
       <option value="area">Peak Area</option>
     </select>
-    <button className="btn btn-primary" onClick={handleGetSelectedPeak}>
+    <button className="btn btn-primary" disabled={apiPeaksLoading || calibrationLoading} onClick={handleGetSelectedPeak}>
       Calibrate
     </button>
   </div>
@@ -4121,11 +2797,10 @@ const openSelectStandardModal = () => {
     <span>
       {quantityMetric === 'height' 
         ? 'Using peak heights for calibration. Peak heights are automatically detected.'
-        : 'Using region areas for calibration. Draw regions around peaks (brush mode) to define integration bounds. Region areas will be used if available, otherwise automatic area calculation around peak will be used.'}
+        : 'Using the area integrated by the backend for the matching peak on each track.'}
     </span>
   </div>
 
-  {showCurve && <CalibrationCurve />}
 </div>
     
   {/* Calibration Loading Spinner */}
@@ -4179,6 +2854,13 @@ const openSelectStandardModal = () => {
         </div>
       )}
 
+      {ec50 && (
+        <p className="mb-4 rounded bg-base-200 p-3">
+          <strong>EC50 (half-maximal dose)</strong> {ec50}
+          {calibrationResult.half_max_dose !== undefined && <span> · Same units as the entered standards</span>}
+        </p>
+      )}
+
       {/* 3) Equation */}
       {(calibrationResult as any).predictions?.equation && (
         <div className="bg-gray-100 p-4 rounded text-center mb-4">
@@ -4201,15 +2883,10 @@ const openSelectStandardModal = () => {
               </tr>
             </thead>
             <tbody>
-              {(calibrationResult as any).predictions.concentrations.map((conc: number, idx: number) => (
-                <tr key={idx}>
-                  <td>{`TRACK ${unknownIndices[idx] + 1}`}</td>
-                  {/* <td>
-                    {Array.isArray(unknown_peaks) && unknown_peaks[idx] !== undefined
-                      ? unknown_peaks[idx].toFixed(4)
-                      : "-"}
-                  </td> */}
-                  <td>{Number(conc).toFixed(1)}</td>
+              {calibrationResult.predictions?.concentrations?.map((conc, index) => (
+                <tr key={calibrationResult.unknownTracks[index]}>
+                  <td>Track {calibrationResult.unknownTracks[index] + 1}</td>
+                  <td>{conc.toFixed(1)}</td>
                 </tr>
               ))}
             </tbody>

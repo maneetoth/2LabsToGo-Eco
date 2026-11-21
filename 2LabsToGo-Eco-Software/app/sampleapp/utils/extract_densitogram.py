@@ -664,14 +664,9 @@ def plot_before_preprocessing(
 
 
 
-        # Flip/rotate image
-        if is_color:
-            rotated_band_array = np.rot90(band_array, k=-1)
-            flipped_rotated_band_array = np.flipud(rotated_band_array)
-        else:
-            rotated_band_array = band_array
-            flipped_rotated_band_array = np.flipud(rotated_band_array)
-        
+        # Use the same lower-edge-to-front orientation for RGB and grayscale tracks.
+        flipped_rotated_band_array = np.flipud(np.rot90(band_array, k=-1))
+
         # Convert numpy array to PIL Image
         mode = "RGB" if is_color else "L"
         img_8u = np.clip(flipped_rotated_band_array * 255.0, 0, 255).astype(np.uint8)

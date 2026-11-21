@@ -55,7 +55,16 @@ true false
     peak_areas    = np.asarray(peak_areas, dtype=float)
 
     if model_type == 'hill':
-        initial_guess = [peak_areas.max(), np.median(concentrations), 1.0]
+        if (
+            not np.all(np.isfinite(concentrations))
+            or not np.all(np.isfinite(peak_areas))
+            or np.any(concentrations < 0)
+            or np.unique(concentrations).size < 3
+            or peak_areas.max() <= 0
+            or np.ptp(peak_areas) == 0
+        ):
+            raise ValueError("Hill calibration needs three distinct nonnegative doses and varying responses.")
+        initial_guess = [peak_areas.max(), np.median(concentrations[concentrations > 0]), 1.0]
         model_func = hill_function
         bounds = ([0.0, 0.0, 0.01], [np.inf, np.inf, 10.0])
     elif model_type == 'mm_origin':
@@ -289,6 +298,19 @@ def calibrate_and_predict(
     buf.seek(0)
     plot_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
+    midpoint = {}
+    if model_type == "hill":
+        _, kd, h = popt
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            half_max_dose = float(kd ** (1.0 / h))
+        if np.isfinite(half_max_dose) and half_max_dose > 0:
+            midpoint = {
+                "half_max_dose": half_max_dose,
+                "half_max_dose_extrapolated": bool(
+                    half_max_dose < known_x.min() or half_max_dose > known_x.max()
+                ),
+            }
+
     return {
         'known_data': {
             'concentrations': list(map(float, known_conc)),
@@ -297,11 +319,13 @@ def calibrate_and_predict(
         'predictions': {
             'concentrations': preds_arr[valid_mask].astype(float).tolist(),
             'peak_areas': list(map(float, np.asarray(unknown_valid, dtype=float))),
-            'equation': equation_str
+            'equation': equation_str,
+            'input_indices': np.flatnonzero(valid_mask).tolist(),
         },
         'model_type': model_type,
         'params': popt_list,
         'r2': r2,
         'rmse': rmse,
-        'plot_base64': plot_base64
+        'plot_base64': plot_base64,
+        **midpoint,
     }

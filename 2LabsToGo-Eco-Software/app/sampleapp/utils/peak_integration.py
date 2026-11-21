@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.signal import find_peaks
+from scipy.integrate import trapezoid
 
 def get_peaks_and_area(x, height=None, threshold=None, distance=30,
                        prominence=None, width=None, wlen=None, rel_height=0.5,
@@ -49,7 +50,7 @@ def get_peaks_and_area(x, height=None, threshold=None, distance=30,
             start -= 1
         while end < len(dx) and dx[end] < 0:
             end += 1
-        area_val = float(np.trapz(x[start:end+1], t[start:end+1]))
+        area_val = float(trapezoid(x[start:end+1], t[start:end+1]))
         if Min_peak_area is not None and area_val < Min_peak_area:
             continue
         entry = {
@@ -105,7 +106,7 @@ def update_peak_areas(x, existing_peaks_dict, find_area=True, Min_peak_area=None
             else:
                 start = end = int(peak_info["peak_x"])
 
-            area_val = float(np.trapz(x[start:end+1], t[start:end+1]))
+            area_val = float(trapezoid(x[start:end+1], t[start:end+1]))
 
             if Min_peak_area is not None and area_val < Min_peak_area:
                 continue
@@ -116,3 +117,46 @@ def update_peak_areas(x, existing_peaks_dict, find_area=True, Min_peak_area=None
         updated_dict[int(p_idx)] = entry
 
     return updated_dict
+
+
+def apply_peak_edits(data, peaks, edits):
+    """Replay ordered edits over SciPy detections for the supplied signal."""
+    for edit in edits:
+        if not isinstance(edit, dict):
+            raise ValueError("Each peak edit must be an object.")
+        track, channel = edit.get("band_key"), edit.get("channel_name")
+        if track not in peaks or channel not in peaks[track]:
+            raise ValueError("Each peak edit must reference a valid track and channel.")
+
+        channel_peaks = peaks[track][channel]
+        operation = edit.get("edit_type", "update")
+        if not isinstance(operation, str) or operation.lower() not in ("add", "update", "delete"):
+            raise ValueError("Unknown peak edit type.")
+        operation = operation.lower()
+        peak_x = edit.get("peak_x")
+        if operation != "add" and type(peak_x) is not int:
+            raise ValueError("Peak edits require an integer peak index.")
+        if operation == "delete":
+            channel_peaks.pop(peak_x, None)
+            continue
+
+        previous = channel_peaks.get(peak_x) if operation == "update" else None
+        if operation == "update" and previous is None:
+            # A boundary change never recreates a deleted or cleared automatic peak.
+            continue
+
+        start, end = edit.get("new_start"), edit.get("new_end")
+        signal = data[track][channel]
+        if type(start) is not int or type(end) is not int or not 0 <= start < end < len(signal):
+            raise ValueError("Peak bounds must be ordered sample indices within the track.")
+        values = signal[start:end + 1]
+        if operation == "add":
+            peak_x = start + int(np.argmax(values))
+
+        channel_peaks[peak_x] = {
+            "peak_x": peak_x,
+            "peak_height": float(signal[peak_x]),
+            "start_end": (start, end),
+            "area": float(trapezoid(values)),
+            "source": previous.get("source", "automatic") if previous else "manual",
+        }

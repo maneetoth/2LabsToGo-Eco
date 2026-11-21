@@ -8,8 +8,9 @@ export type ChannelName = "red" | "green" | "blue" | "grayscale";
 export interface ApiPeakInfo {
   peak_height: number;
   peak_x: number;
-  start_end: [number, number]; // [start_index, end_index]
-  area: number;
+  start_end?: [number, number]; // [start_index, end_index]
+  area?: number;
+  source?: "automatic" | "manual";
 }
 
 // Peaks for a single channel, keyed by peak_x as string
@@ -61,6 +62,7 @@ export interface PeakDetectionApiParams {
   find_area: boolean;
   change_area: ChangeAreaItem[];
   edit_peak_integration: EditPeakIntegrationItem[];
+  clear_automatic_tracks?: string[];
 }
 
 export interface PeakDetectionApiRequest {
@@ -78,16 +80,12 @@ export interface ChartPeak {
   y: number; // peak_height
   startX: number; // start_end[0]
   endX: number; // start_end[1]
-  area: number;
+  area?: number;
+  source: "automatic" | "manual";
 }
 
 // Peaks organized per channel for a single track
-export interface TrackChartPeaks {
-  red: ChartPeak[];
-  green: ChartPeak[];
-  blue: ChartPeak[];
-  grayscale: ChartPeak[];
-}
+export type TrackChartPeaks = Record<ChannelName, ChartPeak[]>;
 
 // All tracks peaks for chart use
 export type AllTracksChartPeaks = {
@@ -125,9 +123,10 @@ export function transformApiPeaksToChartPeaks(
         result[trackIndex][channel].push({
           x: peakInfo.peak_x,
           y: peakInfo.peak_height,
-          startX: peakInfo.start_end[0],
-          endX: peakInfo.start_end[1],
+          startX: peakInfo.start_end?.[0] ?? peakInfo.peak_x,
+          endX: peakInfo.start_end?.[1] ?? peakInfo.peak_x,
           area: peakInfo.area,
+          source: peakInfo.source ?? "automatic",
         });
       }
 
