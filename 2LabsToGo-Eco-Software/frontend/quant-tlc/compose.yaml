@@ -1,0 +1,10 @@
+name: quant-tlc
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${PORT:-3101}:3000"
+    depends_on:
+      - backend
+  backend:
+    build: ./backend

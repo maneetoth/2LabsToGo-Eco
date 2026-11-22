@@ -1,0 +1,14 @@
+name: rtlc
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${PORT:-3102}:3000"
+    depends_on:
+      - backend
+  backend:
+    build: ./backend
+    volumes:
+      - media:/app/media
+volumes:
+  media:

@@ -1,0 +1,11 @@
+Django>=5.2,<5.3
+djangorestframework
+gunicorn
+Pillow
+numpy<2
+matplotlib
+pandas
+plotly
+scikit-learn
+ultralytics==8.2.40
+opencv-python<4.12

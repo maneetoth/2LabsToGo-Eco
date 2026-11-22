@@ -1,0 +1,11 @@
+Django>=5.2,<5.3
+djangorestframework
+gunicorn
+Pillow
+numpy<2
+scipy
+matplotlib
+dtw-python==1.5.3
+pybaselines
+seaborn
+scikit-learn
